@@ -1,0 +1,59 @@
+/* ============================================================
+   New transport button packs (Sprint batch 1)
+   Append this block to global.css, after the existing .tp-mono rules.
+   Every rule still only reads var(--text)/var(--text-dim)/var(--accent)/
+   var(--border) — no pack introduces its own color.
+   ============================================================ */
+
+/* Retro — tape-deck feel: bigger gaps, chunkier double-chevron side icons,
+   a slightly squashed circular main button. */
+.tp-retro { gap: 20px; }
+.tp-retro .tp-side { color: var(--text); }
+.tp-retro .tp-main { width: 56px; height: 48px; border-radius: 28px; }
+
+/* Minimalistic — no filled main button at all, everything is a plain
+   glyph at the same visual weight, tightly packed. */
+.tp-minimal { gap: 22px; }
+.tp-minimal .tp-main {
+  background: none;
+  color: var(--text);
+  box-shadow: none;
+  border: none;
+  width: auto;
+  height: auto;
+}
+.tp-minimal .tp-side { color: var(--text-dim); }
+.tp-minimal .tp-side.tp-active { color: var(--accent); }
+
+/* Stock — Android system-player proportions: modest main button, side
+   icons the same size as the main one, evenly spaced. */
+.tp-stock { gap: 16px; }
+.tp-stock .tp-side { width: 40px; height: 40px; }
+.tp-stock .tp-main { width: 52px; height: 52px; box-shadow: none; }
+
+/* W10 — flat row, everything outlined, no shadows, no circular fill;
+   Windows 10 media flyout look. */
+.tp-w10 { gap: 14px; }
+.tp-w10 .tp-side { border: 1px solid var(--border); border-radius: 6px; width: 32px; height: 32px; }
+.tp-w10 .tp-main {
+  background: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 44px;
+  height: 32px;
+  box-shadow: none;
+}
+
+/* Futuristic — thin, wide-spaced, glowing accent on active states only. */
+.tp-futuristic { gap: 24px; }
+.tp-futuristic .tp-side { color: var(--text-dim); }
+.tp-futuristic .tp-side.tp-active {
+  color: var(--accent);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 70%, transparent));
+}
+.tp-futuristic .tp-main {
+  width: 54px;
+  height: 54px;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent), var(--shadow);
+}

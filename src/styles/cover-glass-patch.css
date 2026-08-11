@@ -1,0 +1,33 @@
+
+/* ============================================================
+   Cover-art-less placeholder — floating glass/obsidian tile
+   Replaces the per-album hash-seeded rainbow gradient background.
+   Same panel/blur/specular treatment as the rest of the UI, so a wall
+   of untagged albums reads as "intentional empty state" instead of a
+   noisy color grid. The note mark sits centered, tinted with the
+   current accent so it still feels alive rather than flat gray.
+   ============================================================ */
+
+.cover-glass {
+  background: var(--panel-strong) !important;
+  border: var(--glass-border-top);
+  position: relative;
+  overflow: hidden;
+}
+
+.cover-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--specular);
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+.cover-glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  pointer-events: none;
+}

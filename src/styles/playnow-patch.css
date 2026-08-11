@@ -1,0 +1,268 @@
+
+/* ============================================================
+   Play Now tab — stats grid, carousels, Instant Mix
+   ============================================================ */
+
+.playnow-screen { padding-top: 4px; padding-bottom: 20px; }
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.stat-grid-wide {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.stat-tile {
+  background: var(--panel);
+  border: var(--glass-border-top);
+  border-radius: 14px;
+  padding: 14px;
+  text-align: left;
+}
+
+.stat-value {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.stat-label {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.instant-mix-tile {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  border: none;
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #000));
+  color: #fff;
+  cursor: pointer;
+  text-align: left;
+  margin-bottom: 26px;
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.instant-mix-title { font-size: 14.5px; font-weight: 700; }
+.instant-mix-sub { font-size: 11.5px; color: rgba(255,255,255,0.85); margin-top: 2px; }
+
+.carousel-section { margin-bottom: 26px; }
+
+.carousel-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.carousel-scroll {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 10px;
+}
+
+.carousel-card {
+  flex: 0 0 110px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+  color: var(--text);
+}
+
+.carousel-card-cover {
+  width: 110px;
+  height: 110px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow);
+  margin-bottom: 6px;
+  border: var(--glass-border-top);
+  position: relative;
+  overflow: hidden;
+}
+
+.carousel-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 110px;
+}
+
+.carousel-card-sub {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 110px;
+}
+
+.carousel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ============================================================
+   Instant Mix builder screen
+   ============================================================ */
+
+.instant-mix-screen { padding-top: 14px; }
+
+.instant-mix-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.instant-mix-footer {
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+/* ============================================================
+   Font picker modal
+   ============================================================ */
+
+.font-picker-sheet { max-width: 360px; }
+
+.font-picker-list {
+  overflow-y: auto;
+  max-height: 60vh;
+  padding: 6px 10px 14px;
+}
+
+.font-picker-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 10px;
+  border: none;
+  background: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.font-picker-row:last-child { border-bottom: none; }
+
+.font-picker-radio {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #fff;
+}
+
+.font-picker-radio-active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ============================================================
+   Tracks tab — thumbnails + actions menu
+   ============================================================ */
+
+.track-row-thumb-wrap { }
+
+.track-row-with-thumb {
+  gap: 12px !important;
+}
+
+.track-row-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--glass-border-top);
+  overflow: hidden;
+  position: relative;
+}
+
+.track-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.track-row-text-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-row-text-artist {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-actions-sheet { max-width: 340px; }
+
+.track-actions-list {
+  padding: 6px 10px 14px;
+}
+
+.track-actions-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 8px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.track-actions-row:hover {
+  background: var(--panel);
+  border-radius: 10px;
+}
+
+.track-actions-row svg {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}

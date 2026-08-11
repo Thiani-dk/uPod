@@ -1,0 +1,6 @@
+{
+  "appId": "com.katiso.upod",
+  "appName": "uPod",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}

@@ -1,0 +1,79 @@
+/* ============================================================
+   Metadata edit modal — the missing piece.
+   MetadataEditModal.jsx uses these class names, but they only ever
+   existed in src/styles/queue-modal.css, which was never imported
+   anywhere — so the modal rendered as a bare unstyled div (no overlay,
+   no centering, no card). This is that missing CSS, appended to the
+   one stylesheet the app actually loads.
+   ============================================================ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 20px;
+  animation: modal-fade-in 0.15s ease-out;
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-sheet {
+  width: 100%;
+  max-width: 420px;
+  max-height: 82vh;
+  background: var(--panel-strong);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  border: var(--glass-border-top);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-pop-in 0.18s ease-out;
+}
+
+@keyframes modal-pop-in {
+  from { transform: translateY(12px) scale(0.98); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-header .modal-title {
+  margin-bottom: 0;
+}
+
+.modal-close-btn {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.15s, transform 0.15s;
+  flex-shrink: 0;
+}
+
+.modal-close-btn:hover {
+  background: var(--border);
+  transform: scale(1.05);
+}

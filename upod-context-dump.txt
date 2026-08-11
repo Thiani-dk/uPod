@@ -1,0 +1,4246 @@
+
+=== src/online/lyrics.js ===
+// src/online/lyrics.js
+// Looks up plain lyrics online (lyrics.ovh — free, CORS-enabled, no key
+// needed), caches results in localStorage per artist+title, and offers an
+// optional bring-your-own-key LLM fallback when nothing is found.
+
+const CACHE_PREFIX = "upod-lyrics::";
+
+function normalize(str) {
+  return (str || "").trim().toLowerCase();
+}
+
+function cacheKey(artist, title) {
+  return `${CACHE_PREFIX}${normalize(artist)}::${normalize(title)}`;
+}
+
+export function getCachedLyrics(artist, title) {
+  try {
+    const raw = localStorage.getItem(cacheKey(artist, title));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCache(artist, title, entry) {
+  try {
+    localStorage.setItem(cacheKey(artist, title), JSON.stringify(entry));
+  } catch {
+    /* storage full or unavailable — non-fatal, just skip caching */
+  }
+}
+
+// Strips common noise from downloaded-file artist/title strings before
+// searching, e.g. "[MP3DL.CC] Artist - Song (Cover)-192k" -> "Song".
+function cleanForSearch(str) {
+  return (str || "")
+    .replace(/\[.*?\]/g, "")
+    .replace(/\(.*?(cover|remix|freestyle|leak|lyrics).*?\)/gi, "")
+    .replace(/-?\d{2,3}k$/i, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+export async function fetchLyricsOnline(artist, title) {
+  const cached = getCachedLyrics(artist, title);
+  if (cached) return { ...cached, fromCache: true };
+
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return { ok: false, offline: true };
+  }
+
+  const cleanArtist = cleanForSearch(artist);
+  const cleanTitle = cleanForSearch(title);
+
+  // LRCLIB first — free, open-source, CORS-enabled, and returns real
+  // time-synced lyrics when available (not just plain text).
+  const fromLrclib = await tryLrclib(cleanArtist, cleanTitle);
+  if (fromLrclib) {
+    saveCache(artist, title, fromLrclib);
+    return fromLrclib;
+  }
+
+  // lyrics.ovh as a fallback — smaller catalog but sometimes has things
+  // LRCLIB doesn't.
+  try {
+    const url = `https://api.lyrics.ovh/v1/${encodeURIComponent(cleanArtist)}/${encodeURIComponent(cleanTitle)}`;
+    const res = await fetch(url);
+    if (!res.ok) return { ok: false, notFound: true };
+    const data = await res.json();
+    if (!data.lyrics) return { ok: false, notFound: true };
+
+    const entry = { ok: true, lyrics: data.lyrics.trim(), synced: null, source: "lyrics.ovh", cachedAt: Date.now() };
+    saveCache(artist, title, entry);
+    return entry;
+  } catch {
+    return { ok: false, error: true };
+  }
+}
+
+async function tryLrclib(artist, title) {
+  try {
+    const directUrl = `https://lrclib.net/api/get?artist_name=${encodeURIComponent(artist)}&track_name=${encodeURIComponent(title)}`;
+    let res = await fetch(directUrl);
+    let data = res.ok ? await res.json() : null;
+
+    if (!data || (!data.plainLyrics && !data.syncedLyrics)) {
+      // Fall back to fuzzy search when the exact lookup misses.
+      const searchUrl = `https://lrclib.net/api/search?artist_name=${encodeURIComponent(artist)}&track_name=${encodeURIComponent(title)}`;
+      const searchRes = await fetch(searchUrl);
+      if (searchRes.ok) {
+        const results = await searchRes.json();
+        data = Array.isArray(results) ? results.find((r) => r.plainLyrics || r.syncedLyrics) : null;
+      }
+    }
+
+    if (!data || (!data.plainLyrics && !data.syncedLyrics)) return null;
+    if (data.instrumental) return { ok: true, lyrics: "(Instrumental — no lyrics)", synced: null, source: "LRCLIB", cachedAt: Date.now() };
+
+    return {
+      ok: true,
+      lyrics: data.plainLyrics || stripLrcTimestamps(data.syncedLyrics),
+      synced: data.syncedLyrics || null,
+      source: "LRCLIB",
+      cachedAt: Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function stripLrcTimestamps(lrc) {
+  return (lrc || "")
+    .split("\n")
+    .map((line) => line.replace(/\[\d{2}:\d{2}\.\d{2,3}\]/g, "").trim())
+    .join("\n");
+}
+
+export function saveManualLyrics(artist, title, lyricsText) {
+  const entry = { ok: true, lyrics: lyricsText.trim(), source: "manual", cachedAt: Date.now() };
+  saveCache(artist, title, entry);
+  return entry;
+}
+
+// Optional bring-your-own-key fallback. Key is stored only in the user's
+// browser (localStorage) and used directly from the client — never sent
+// anywhere but Google's API. Clearly labeled as AI-generated, never
+// presented as official lyrics.
+const GEMINI_KEY_STORAGE = "upod-gemini-api-key";
+
+export function getGeminiKey() {
+  return localStorage.getItem(GEMINI_KEY_STORAGE) || "";
+}
+export function setGeminiKey(key) {
+  if (key) localStorage.setItem(GEMINI_KEY_STORAGE, key);
+  else localStorage.removeItem(GEMINI_KEY_STORAGE);
+}
+
+export async function fetchLyricsFromGemini(artist, title) {
+  const key = getGeminiKey();
+  if (!key) return { ok: false, noKey: true };
+
+  const prompt = `Reconstruct your best-effort approximate lyrics for the song "${title}" by "${artist}". If you are not confident, say so plainly instead of inventing lyrics. Output only the lyrics text, no commentary.`;
+
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+      }
+    );
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return { ok: false, error: true };
+
+    const entry = { ok: true, lyrics: text.trim(), source: "AI-generated (Gemini) — unverified", cachedAt: Date.now() };
+    saveCache(artist, title, entry);
+    return entry;
+  } catch {
+    return { ok: false, error: true };
+  }
+}
+
+=== src/online/trackOrder.js ===
+// src/online/trackOrder.js
+// Looks up the canonical track order for an album from MusicBrainz (free,
+// no key required, CORS-enabled) and fuzzy-matches it against your local
+// track titles to fix track numbers — without ever touching your files,
+// only the in-app metadata.
+
+function normalize(str) {
+  return (str || "")
+    .toLowerCase()
+    .replace(/\(.*?\)/g, "")
+    .replace(/\[.*?\]/g, "")
+    .replace(/feat\.?.*/i, "")
+    .replace(/[^a-z0-9]/g, "")
+    .trim();
+}
+
+function similarity(a, b) {
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+
+  const lengthRatio = Math.min(na.length, nb.length) / Math.max(na.length, nb.length);
+  if ((na.includes(nb) || nb.includes(na)) && lengthRatio >= 0.7) return 0.85;
+
+  // crude trigram overlap score — this is what actually distinguishes
+  // "baby blues" from "baby blues remix" once the containment shortcut
+  // above no longer fires for mismatched lengths.
+  const setA = new Set(na.match(/.{1,3}/g) || []);
+  const setB = new Set(nb.match(/.{1,3}/g) || []);
+  let overlap = 0;
+  for (const g of setA) if (setB.has(g)) overlap++;
+  return overlap / Math.max(setA.size, setB.size, 1);
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new Error(`MusicBrainz request failed (${res.status})`);
+  return res.json();
+}
+
+// Returns [{ title, position }] for the best-matching release, or null.
+export async function fetchCanonicalTrackOrder(albumTitle, artistName) {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return { ok: false, offline: true };
+  }
+  try {
+    const query = encodeURIComponent(`release:"${albumTitle}" AND artist:"${artistName}"`);
+    const searchUrl = `https://musicbrainz.org/ws/2/release/?query=${query}&fmt=json&limit=5`;
+    const searchData = await fetchJson(searchUrl);
+    const release = searchData?.releases?.[0];
+    if (!release) return { ok: false, notFound: true };
+
+    const releaseUrl = `https://musicbrainz.org/ws/2/release/${release.id}?inc=recordings&fmt=json`;
+    const releaseData = await fetchJson(releaseUrl);
+    const media = releaseData?.media?.[0];
+    if (!media?.tracks?.length) return { ok: false, notFound: true };
+
+    const order = media.tracks.map((t) => ({ title: t.title, position: t.position }));
+    return { ok: true, order, releaseTitle: releaseData.title };
+  } catch {
+    return { ok: false, error: true };
+  }
+}
+
+// Matches local tracks against the canonical order by title similarity.
+// Returns a map of { trackId: newTrackNumber } for tracks it's confident
+// about (similarity above threshold); unmatched tracks are left untouched.
+export function matchTracksToOrder(localTracks, canonicalOrder, threshold = 0.62) {
+  const updates = {};
+  const usedPositions = new Set();
+
+  for (const local of localTracks) {
+    let best = null;
+    let bestScore = 0;
+    for (const candidate of canonicalOrder) {
+      if (usedPositions.has(candidate.position)) continue;
+      const score = similarity(local.title, candidate.title);
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
+    }
+    if (best && bestScore >= threshold) {
+      updates[local.id] = best.position;
+      usedPositions.add(best.position);
+    }
+  }
+  return updates;
+}
+
+=== src/audio/metadata.js ===
+// src/audio/metadata.js
+// Parses MP3/FLAC/M4A/OGG metadata from File objects and groups tracks into albums.
+import jsmediatags from "jsmediatags";
+
+export const SUPPORTED_EXTENSIONS = ["mp3", "flac", "m4a", "ogg"];
+
+export function isAudioFile(filename) {
+  const ext = filename.split(".").pop().toLowerCase();
+  return SUPPORTED_EXTENSIONS.includes(ext);
+}
+
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+export function gradientForAlbum(albumName) {
+  const h = hashString(albumName || "Unknown Album");
+  const hue1 = h % 360;
+  const hue2 = (hue1 + 55) % 360;
+  return [`hsl(${hue1}, 70%, 55%)`, `hsl(${hue2}, 65%, 22%)`];
+}
+
+function readTagsFromFile(file) {
+  return new Promise((resolve) => {
+    jsmediatags.read(file, {
+      onSuccess: (tag) => resolve(tag.tags),
+      onError: () => resolve({}),
+    });
+  });
+}
+
+function coverArtDataUrl(picture) {
+  if (!picture) return null;
+  try {
+    const { data, format } = picture;
+    let base64 = "";
+    for (let i = 0; i < data.length; i++) base64 += String.fromCharCode(data[i]);
+    return `data:${format};base64,${btoa(base64)}`;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeKey(str) {
+  return (str || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export async function parseTrackFile(file) {
+  const tags = await readTagsFromFile(file);
+  const title = tags.title || file.name.replace(/\.[^/.]+$/, "");
+  const artist = (tags.artist || "Unknown Artist").trim();
+  const hasAlbumTag = Boolean(tags.album && tags.album.trim());
+  const album = (tags.album || "Unknown Album").trim();
+  // TPE2 is the "album artist" ID3 frame — the correct field to group
+  // compilation-style albums by, since individual track `artist` can vary
+  // per song (features, typos, missing tags) even on the same real album.
+  const albumArtist = (tags.TPE2?.data || tags.albumArtist || artist || "Unknown Artist").trim();
+  const track = tags.track ? parseInt(String(tags.track).split("/")[0], 10) : 0;
+  const year = tags.year || null;
+  const cover = coverArtDataUrl(tags.picture);
+
+  return {
+    id: `${file.name}-${file.size}-${file.lastModified}`,
+    file,
+    title,
+    artist,
+    albumArtist,
+    album,
+    albumKey: normalizeKey(album),
+    hasAlbumTag,
+    track: Number.isFinite(track) ? track : 0,
+    year,
+    cover,
+  };
+}
+
+export async function parseLibrary(fileList) {
+  const files = Array.from(fileList).filter((f) => isAudioFile(f.name));
+
+  const voiceNotePattern = /(^|[\\/])(PTT-|AUD-.*-WA|voice[- _]?message|voicemail)/i;
+  const musicFiles = files.filter((f) => !voiceNotePattern.test(f.name));
+
+  const tracks = [];
+  for (const file of musicFiles) {
+    tracks.push(await parseTrackFile(file));
+  }
+  return tracks;
+}
+
+export function groupIntoAlbums(tracks) {
+  const map = new Map();
+  for (const t of tracks) {
+    // Group purely by normalized album name — never by per-track artist,
+    // since that's the field most likely to vary (features, typos, blanks)
+    // even when every track genuinely belongs to the same album.
+    const key = t.hasAlbumTag ? (t.albumKey || normalizeKey(t.album)) : `single::${t.id}`;
+    if (!map.has(key)) {
+      // Untagged singles get their OWN identity — title, artist, and
+      // gradient seed all come from the track itself — instead of every
+      // single collapsing into one identical "Unknown Album" teal tile.
+      const seed = t.hasAlbumTag ? t.album : `${t.title}::${t.artist}::${t.id}`;
+      map.set(key, {
+        id: key,
+        title: t.hasAlbumTag ? t.album : t.title,
+        forcedArtist: t.hasAlbumTag ? null : t.artist,
+        artistCandidates: new Map(), // normalized albumArtist -> {display, count}
+        year: t.year,
+        cover: t.cover,
+        gradient: gradientForAlbum(seed),
+        tracks: [],
+      });
+    }
+    const entry = map.get(key);
+    entry.tracks.push(t);
+    if (!entry.cover && t.cover) entry.cover = t.cover;
+    if (!entry.year && t.year) entry.year = t.year;
+
+    const artistKey = normalizeKey(t.albumArtist || t.artist);
+    const existing = entry.artistCandidates.get(artistKey);
+    entry.artistCandidates.set(artistKey, {
+      display: existing?.display || (t.albumArtist || t.artist),
+      count: (existing?.count || 0) + 1,
+    });
+  }
+
+  const albums = Array.from(map.values()).map((entry) => {
+    let artist = entry.forcedArtist;
+    if (!artist) {
+      // Pick whichever album-artist value appears on the most tracks. If
+      // the album is a genuine multi-artist compilation (several very
+      // different artists, no majority), fall back to "Various Artists".
+      const candidates = Array.from(entry.artistCandidates.values()).sort((a, b) => b.count - a.count);
+      const top = candidates[0];
+      const majority = top && top.count / entry.tracks.length >= 0.5;
+      artist = majority ? top.display : candidates.length > 1 ? "Various Artists" : top?.display || "Unknown Artist";
+    }
+
+    // Trust the file's own track number UNLESS it collides with another
+    // track in the same album (the actual bug we saw — two tracks both
+    // tagged "1") or was explicitly disproven by an online fix. Confirmed
+    // online matches always win. This avoids scrambling albums that were
+    // already tagged correctly, while still separating genuine conflicts.
+    const numberCounts = {};
+    for (const t of entry.tracks) {
+      if (t.track > 0) numberCounts[t.track] = (numberCounts[t.track] || 0) + 1;
+    }
+    const isReliable = (t) => {
+      if (t.trackConfirmed === true) return true;
+      if (t.trackConfirmed === false) return false;
+      return t.track > 0 && numberCounts[t.track] === 1;
+    };
+
+    const sortedTracks = [...entry.tracks].sort((a, b) => {
+      const aOk = isReliable(a);
+      const bOk = isReliable(b);
+      if (aOk && bOk) return a.track - b.track;
+      if (aOk) return -1;
+      if (bOk) return 1;
+      return a.title.localeCompare(b.title);
+    });
+
+    return {
+      id: entry.id,
+      title: entry.title,
+      artist,
+      year: entry.year,
+      cover: entry.cover,
+      gradient: entry.gradient,
+      tracks: sortedTracks,
+    };
+  });
+
+  albums.sort((a, b) => a.title.localeCompare(b.title));
+  return albums;
+}
+
+=== src/audio/studioEffects.js ===
+// src/audio/studioEffects.js
+// Offline (non-realtime) audio rendering for all 8 Studio effects.
+// Each effect decodes the source file once, builds a fresh Web Audio graph
+// inside an OfflineAudioContext, and renders a brand-new AudioBuffer —
+// the original file is never touched.
+
+export const STUDIO_EFFECTS = [
+  { id: "slowed", label: "Slowed", desc: "Tempo and pitch both drop — playbackRate 0.85" },
+  { id: "reverb", label: "Reverb", desc: "Generated impulse-response reverb tail" },
+  { id: "slowed-reverb", label: "Slowed + Reverb", desc: "Both combined — the classic 'slowed + reverb' sound" },
+  { id: "nightcore", label: "Nightcore", desc: "Sped up and pitched up — playbackRate 1.25" },
+  { id: "daycore", label: "Daycore", desc: "Slowed further with an extra pitch drop for a heavy, moody vocal" },
+  { id: "lofi", label: "Lo-Fi / Vinyl", desc: "Low-pass warmth, crackle, and a gentle pitch wobble" },
+  { id: "telephone", label: "Telephone / Megaphone", desc: "Narrow bandpass filter — sounds like a cheap speaker or phone call" },
+  { id: "reverse-reverb", label: "Reverse Reverb", desc: "Reverb tail swells in backwards before the track plays forward" },
+  { id: "8d", label: "8D Audio", desc: "Slow auto-panning between ears with a gentle tremolo" },
+];
+
+async function decodeFile(file) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const tempCtx = new Ctx();
+  const arrayBuffer = await file.arrayBuffer();
+  const audioBuffer = await tempCtx.decodeAudioData(arrayBuffer);
+  tempCtx.close();
+  return audioBuffer;
+}
+
+// Manually reverses every channel of an AudioBuffer (used for reverse-reverb).
+function reverseBuffer(ctx, buffer) {
+  const out = ctx.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const src = buffer.getChannelData(c);
+    const dst = out.getChannelData(c);
+    for (let i = 0; i < src.length; i++) dst[i] = src[src.length - 1 - i];
+  }
+  return out;
+}
+
+// Generates a synthetic reverb impulse response (exponentially decaying noise).
+function makeImpulseResponse(ctx, seconds = 2.5, decay = 3.2) {
+  const rate = ctx.sampleRate;
+  const length = Math.floor(rate * seconds);
+  const impulse = ctx.createBuffer(2, length, rate);
+  for (let c = 0; c < 2; c++) {
+    const data = impulse.getChannelData(c);
+    for (let i = 0; i < length; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+    }
+  }
+  return impulse;
+}
+
+// Generates vinyl-style crackle/dust noise as a looping buffer.
+function makeCrackleBuffer(ctx, seconds) {
+  const rate = ctx.sampleRate;
+  const length = Math.floor(rate * seconds);
+  const buffer = ctx.createBuffer(2, length, rate);
+  for (let c = 0; c < 2; c++) {
+    const data = buffer.getChannelData(c);
+    for (let i = 0; i < length; i++) {
+      // Sparse random pops + low-level hiss
+      const hiss = (Math.random() * 2 - 1) * 0.02;
+      const pop = Math.random() < 0.0006 ? (Math.random() * 2 - 1) * 0.6 : 0;
+      data[i] = hiss + pop;
+    }
+  }
+  return buffer;
+}
+
+function addWetDry(ctx, wetNode, dryNode, destination, wetAmount = 0.35) {
+  const wetGain = ctx.createGain();
+  wetGain.gain.value = wetAmount;
+  const dryGain = ctx.createGain();
+  dryGain.gain.value = 1 - wetAmount * 0.4;
+  wetNode.connect(wetGain).connect(destination);
+  dryNode.connect(dryGain).connect(destination);
+}
+
+// Builds and renders the offline graph for a given effect. Returns a rendered AudioBuffer.
+async function renderGraph(sourceBuffer, effectId) {
+  const rateMap = { slowed: 0.85, "slowed-reverb": 0.85, nightcore: 1.25, daycore: 0.8 };
+  const rate = rateMap[effectId] || 1;
+  const renderSeconds = sourceBuffer.duration / rate + (effectId.includes("reverb") ? 2.5 : 0);
+  const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const ctx = new OfflineCtx(
+    sourceBuffer.numberOfChannels,
+    Math.ceil(renderSeconds * sourceBuffer.sampleRate),
+    sourceBuffer.sampleRate
+  );
+
+  const bufferForGraph = effectId === "reverse-reverb" ? reverseBuffer(ctx, sourceBuffer) : sourceBuffer;
+
+  const src = ctx.createBufferSource();
+  src.buffer = bufferForGraph;
+
+  switch (effectId) {
+    case "slowed":
+    case "nightcore": {
+      src.playbackRate.value = rate;
+      src.connect(ctx.destination);
+      break;
+    }
+    case "daycore": {
+      src.playbackRate.value = rate;
+      src.detune.value = -350; // extra pitch drop beyond the rate change
+      src.connect(ctx.destination);
+      break;
+    }
+    case "reverb":
+    case "slowed-reverb": {
+      if (effectId === "slowed-reverb") src.playbackRate.value = rate;
+      const convolver = ctx.createConvolver();
+      convolver.buffer = makeImpulseResponse(ctx);
+      const splitter = ctx.createGain();
+      src.connect(splitter);
+      splitter.connect(convolver);
+      addWetDry(ctx, convolver, splitter, ctx.destination, 0.4);
+      break;
+    }
+    case "reverse-reverb": {
+      // Source buffer is already reversed. Convolve it (reverb tail lands
+      // at what becomes the START once we reverse the render back).
+      const convolver = ctx.createConvolver();
+      convolver.buffer = makeImpulseResponse(ctx, 2.0, 2.5);
+      const wet = ctx.createGain();
+      wet.gain.value = 0.55;
+      const dry = ctx.createGain();
+      dry.gain.value = 0.9;
+      src.connect(convolver).connect(wet).connect(ctx.destination);
+      src.connect(dry).connect(ctx.destination);
+      break;
+    }
+    case "lofi": {
+      const lowpass = ctx.createBiquadFilter();
+      lowpass.type = "lowpass";
+      lowpass.frequency.value = 3400;
+      lowpass.Q.value = 0.7;
+
+      // Gentle pitch wobble via an LFO modulating detune.
+      const wobble = ctx.createOscillator();
+      wobble.frequency.value = 0.7;
+      const wobbleGain = ctx.createGain();
+      wobbleGain.gain.value = 12; // cents
+      wobble.connect(wobbleGain).connect(src.detune);
+      wobble.start(0);
+
+      const crackle = ctx.createBufferSource();
+      crackle.buffer = makeCrackleBuffer(ctx, sourceBuffer.duration);
+      crackle.loop = true;
+      const crackleGain = ctx.createGain();
+      crackleGain.gain.value = 0.5;
+
+      src.connect(lowpass).connect(ctx.destination);
+      crackle.connect(crackleGain).connect(ctx.destination);
+      crackle.start(0);
+      break;
+    }
+    case "telephone": {
+      const bandpass = ctx.createBiquadFilter();
+      bandpass.type = "bandpass";
+      bandpass.frequency.value = 1500;
+      bandpass.Q.value = 2.2;
+
+      const shaper = ctx.createWaveShaper();
+      const curve = new Float32Array(256);
+      for (let i = 0; i < 256; i++) {
+        const x = (i / 255) * 2 - 1;
+        curve[i] = Math.tanh(x * 2.2); // mild saturation
+      }
+      shaper.curve = curve;
+
+      src.connect(bandpass).connect(shaper).connect(ctx.destination);
+      break;
+    }
+    case "8d": {
+      const panner = ctx.createStereoPanner();
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 0.12; // one full left-right sweep ~every 8s
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.value = 1; // pan range -1..1
+      lfo.connect(lfoGain).connect(panner.pan);
+      lfo.start(0);
+
+      const tremolo = ctx.createGain();
+      const tremLfo = ctx.createOscillator();
+      tremLfo.frequency.value = 0.24;
+      const tremGain = ctx.createGain();
+      tremGain.gain.value = 0.15;
+      const tremOffset = ctx.createConstantSource();
+      tremOffset.offset.value = 0.85;
+      tremLfo.connect(tremGain).connect(tremolo.gain);
+      tremOffset.connect(tremolo.gain);
+      tremLfo.start(0);
+      tremOffset.start(0);
+
+      src.connect(panner).connect(tremolo).connect(ctx.destination);
+      break;
+    }
+    default: {
+      src.connect(ctx.destination);
+    }
+  }
+
+  src.start(0);
+  const rendered = await ctx.startRendering();
+  return effectId === "reverse-reverb" ? reverseBuffer(ctx, rendered) : rendered;
+}
+
+// Public entry point: renders `effectId` applied to `track.file`, returns
+// { audioBuffer, suggestedFileName }. Caller is responsible for encoding
+// (see wav.js) and filing it into a playlist.
+export async function renderStudioEffect(track, effectId, onStatus) {
+  onStatus?.("Decoding source file…");
+  const sourceBuffer = await decodeFile(track.file);
+
+  onStatus?.("Rendering effect…");
+  const renderedBuffer = await renderGraph(sourceBuffer, effectId);
+
+  const effectDef = STUDIO_EFFECTS.find((e) => e.id === effectId);
+  const baseName = track.title.replace(/[\\/:*?"<>|]/g, "").trim() || "track";
+  const suggestedFileName = `${baseName} (${effectDef.label}).wav`;
+
+  return { audioBuffer: renderedBuffer, suggestedFileName, effectDef };
+}
+
+=== src/audio/engine.js ===
+// src/audio/engine.js
+// Wraps a single <audio> element in a real Web Audio graph:
+// source -> [7 BiquadFilterNode peaking bands] -> destination
+// Effects (slowed/reverb/nightcore/etc) get added onto this same graph in Phase 3.
+
+export const EQ_FREQUENCIES = [60, 150, 400, 1000, 2400, 6000, 12000];
+
+export const EQ_PRESETS = {
+  Flat:        [0, 0, 0, 0, 0, 0, 0],
+  "Bass Boost": [7, 5, 3, 0, -1, -1, 0],
+  Treble:      [0, -1, -1, 0, 3, 5, 7],
+  Vocal:       [-3, -2, 1, 4, 4, 1, -2],
+};
+
+export class AudioEngine {
+  constructor(audioElement) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new Ctx();
+
+    // NOTE: createMediaElementSource can only be called ONCE per <audio>
+    // element for its whole lifetime — the engine must be created exactly once.
+    this.source = this.ctx.createMediaElementSource(audioElement);
+
+    this.bands = EQ_FREQUENCIES.map((freq, i) => {
+      const filter = this.ctx.createBiquadFilter();
+      // First and last bands behave better as shelf filters; middle bands as peaking.
+      filter.type = i === 0 ? "lowshelf" : i === EQ_FREQUENCIES.length - 1 ? "highshelf" : "peaking";
+      filter.frequency.value = freq;
+      filter.Q.value = 1;
+      filter.gain.value = 0;
+      return filter;
+    });
+
+    // Chain: source -> band0 -> band1 -> ... -> bandN -> destination
+    let node = this.source;
+    for (const band of this.bands) {
+      node.connect(band);
+      node = band;
+    }
+    node.connect(this.ctx.destination);
+  }
+
+  resume() {
+    if (this.ctx.state === "suspended") this.ctx.resume();
+  }
+
+  setBandGain(index, db) {
+    if (this.bands[index]) this.bands[index].gain.value = db;
+  }
+
+  setAllBands(gainsArray) {
+    gainsArray.forEach((db, i) => this.setBandGain(i, db));
+  }
+}
+
+=== src/audio/wav.js ===
+// src/audio/wav.js
+// Encodes an AudioBuffer into a WAV Blob, with basic metadata written into
+// a RIFF LIST/INFO chunk (artist, title) — the closest thing to ID3 tags
+// that plain WAV supports without a dedicated encoder library.
+
+function writeString(view, offset, str) {
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+function buildInfoChunk(meta) {
+  const fields = [];
+  if (meta.title) fields.push(["INAM", meta.title]);
+  if (meta.artist) fields.push(["IART", meta.artist]);
+  if (meta.album) fields.push(["IPRD", meta.album]);
+  if (meta.comment) fields.push(["ICMT", meta.comment]);
+
+  let size = 4; // "INFO"
+  const encoded = fields.map(([id, val]) => {
+    const bytes = new TextEncoder().encode(val + "\0");
+    const padded = bytes.length % 2 === 0 ? bytes.length : bytes.length + 1;
+    size += 8 + padded;
+    return { id, bytes, padded };
+  });
+
+  const buf = new ArrayBuffer(8 + size);
+  const view = new DataView(buf);
+  writeString(view, 0, "LIST");
+  view.setUint32(4, size, true);
+  writeString(view, 8, "INFO");
+  let offset = 12;
+  for (const f of encoded) {
+    writeString(view, offset, f.id);
+    view.setUint32(offset + 4, f.padded, true);
+    new Uint8Array(buf, offset + 8, f.bytes.length).set(f.bytes);
+    offset += 8 + f.padded;
+  }
+  return new Uint8Array(buf);
+}
+
+export function audioBufferToWavBlob(audioBuffer, meta = {}) {
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const numFrames = audioBuffer.length;
+  const bytesPerSample = 2; // 16-bit PCM
+  const dataSize = numFrames * numChannels * bytesPerSample;
+
+  const infoChunk = buildInfoChunk(meta);
+  const headerSize = 44;
+  const totalSize = headerSize + dataSize + infoChunk.length;
+
+  const buf = new ArrayBuffer(totalSize);
+  const view = new DataView(buf);
+
+  writeString(view, 0, "RIFF");
+  view.setUint32(4, totalSize - 8, true);
+  writeString(view, 8, "WAVE");
+
+  writeString(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * bytesPerSample, true);
+  view.setUint16(32, numChannels * bytesPerSample, true);
+  view.setUint16(34, 16, true);
+
+  writeString(view, 36, "data");
+  view.setUint32(40, dataSize, true);
+
+  // Interleave channels and convert float32 [-1,1] -> int16
+  const channelData = [];
+  for (let c = 0; c < numChannels; c++) channelData.push(audioBuffer.getChannelData(c));
+
+  let offset = 44;
+  for (let i = 0; i < numFrames; i++) {
+    for (let c = 0; c < numChannels; c++) {
+      const sample = Math.max(-1, Math.min(1, channelData[c][i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+  }
+
+  new Uint8Array(buf, headerSize + dataSize, infoChunk.length).set(infoChunk);
+
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+=== src/audio/mp3.js ===
+// src/audio/mp3.js
+// Encodes an AudioBuffer to a real MP3 Blob using lamejs, and appends a
+// simple ID3v1 tag (title/artist/album) — ID3v1 is a fixed 128-byte
+// trailer, which is the simplest reliable way to tag MP3s from the browser
+// without a full ID3v2 frame writer.
+
+import lamejs from "@breezystack/lamejs";
+
+function floatTo16BitPCM(channelData) {
+  const out = new Int16Array(channelData.length);
+  for (let i = 0; i < channelData.length; i++) {
+    const s = Math.max(-1, Math.min(1, channelData[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+function buildId3v1Tag({ title = "", artist = "", album = "", track = 0 }) {
+  const buf = new Uint8Array(128);
+  const enc = new TextEncoder();
+  const writeField = (offset, len, str) => {
+    const bytes = enc.encode(str).slice(0, len);
+    buf.set(bytes, offset);
+  };
+  writeField(0, 3, "TAG");
+  writeField(3, 30, title);
+  writeField(33, 30, artist);
+  writeField(63, 30, album);
+  writeField(93, 4, ""); // year
+  // Bytes 97-125 = comment (28 bytes when using ID3v1.1 track number trick)
+  buf[125] = 0; // zero byte before track number signals ID3v1.1
+  buf[126] = track && track > 0 ? track : 0;
+  buf[127] = 0xff; // genre unknown
+  return buf;
+}
+
+export async function audioBufferToMp3Blob(audioBuffer, meta = {}, kbps = 192) {
+  const channels = audioBuffer.numberOfChannels >= 2 ? 2 : 1;
+  const sampleRate = audioBuffer.sampleRate;
+  const encoder = new lamejs.Mp3Encoder(channels, sampleRate, kbps);
+
+  const left = floatTo16BitPCM(audioBuffer.getChannelData(0));
+  const right = channels === 2 ? floatTo16BitPCM(audioBuffer.getChannelData(1)) : null;
+
+  const blockSize = 1152;
+  const chunks = [];
+  for (let i = 0; i < left.length; i += blockSize) {
+    const leftChunk = left.subarray(i, i + blockSize);
+    let mp3buf;
+    if (channels === 2) {
+      const rightChunk = right.subarray(i, i + blockSize);
+      mp3buf = encoder.encodeBuffer(leftChunk, rightChunk);
+    } else {
+      mp3buf = encoder.encodeBuffer(leftChunk);
+    }
+    if (mp3buf.length > 0) chunks.push(new Uint8Array(mp3buf));
+  }
+  const end = encoder.flush();
+  if (end.length > 0) chunks.push(new Uint8Array(end));
+
+  chunks.push(buildId3v1Tag(meta));
+
+  return new Blob(chunks, { type: "audio/mpeg" });
+}
+
+=== src/App.css ===
+.counter {
+  font-size: 16px;
+  padding: 5px 10px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 2px solid transparent;
+  transition: border-color 0.3s;
+  margin-bottom: 24px;
+
+  &:hover {
+    border-color: var(--accent-border);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+.hero {
+  position: relative;
+
+  .base,
+  .framework,
+  .vite {
+    inset-inline: 0;
+    margin: 0 auto;
+  }
+
+  .base {
+    width: 170px;
+    position: relative;
+    z-index: 0;
+  }
+
+  .framework,
+  .vite {
+    position: absolute;
+  }
+
+  .framework {
+    z-index: 1;
+    top: 34px;
+    height: 28px;
+    transform: perspective(2000px) rotateZ(300deg) rotateX(44deg) rotateY(39deg)
+      scale(1.4);
+  }
+
+  .vite {
+    z-index: 0;
+    top: 107px;
+    height: 26px;
+    width: auto;
+    transform: perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg)
+      scale(0.8);
+  }
+}
+
+#center {
+  display: flex;
+  flex-direction: column;
+  gap: 25px;
+  place-content: center;
+  place-items: center;
+  flex-grow: 1;
+
+  @media (max-width: 1024px) {
+    padding: 32px 20px 24px;
+    gap: 18px;
+  }
+}
+
+#next-steps {
+  display: flex;
+  border-top: 1px solid var(--border);
+  text-align: left;
+
+  & > div {
+    flex: 1 1 0;
+    padding: 32px;
+    @media (max-width: 1024px) {
+      padding: 24px 20px;
+    }
+  }
+
+  .icon {
+    margin-bottom: 16px;
+    width: 22px;
+    height: 22px;
+  }
+
+  @media (max-width: 1024px) {
+    flex-direction: column;
+    text-align: center;
+  }
+}
+
+#docs {
+  border-right: 1px solid var(--border);
+
+  @media (max-width: 1024px) {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+#next-steps ul {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  gap: 8px;
+  margin: 32px 0 0;
+
+  .logo {
+    height: 18px;
+  }
+
+  a {
+    color: var(--text-h);
+    font-size: 16px;
+    border-radius: 6px;
+    background: var(--social-bg);
+    display: flex;
+    padding: 6px 12px;
+    align-items: center;
+    gap: 8px;
+    text-decoration: none;
+    transition: box-shadow 0.3s;
+
+    &:hover {
+      box-shadow: var(--shadow);
+    }
+    .button-icon {
+      height: 18px;
+      width: 18px;
+    }
+  }
+
+  @media (max-width: 1024px) {
+    margin-top: 20px;
+    flex-wrap: wrap;
+    justify-content: center;
+
+    li {
+      flex: 1 1 calc(50% - 8px);
+    }
+
+    a {
+      width: 100%;
+      justify-content: center;
+      box-sizing: border-box;
+    }
+  }
+}
+
+#spacer {
+  height: 88px;
+  border-top: 1px solid var(--border);
+  @media (max-width: 1024px) {
+    height: 48px;
+  }
+}
+
+.ticks {
+  position: relative;
+  width: 100%;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    top: -4.5px;
+    border: 5px solid transparent;
+  }
+
+  &::before {
+    left: 0;
+    border-left-color: var(--border);
+  }
+  &::after {
+    right: 0;
+    border-right-color: var(--border);
+  }
+}
+
+=== src/main.jsx ===
+// src/main.jsx
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App.jsx";
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+=== src/components/TransportButtons.jsx ===
+// src/components/TransportButtons.jsx
+// Each pack can now change TWO things: the CSS shape/size class, AND which
+// literal icon glyphs are used for shuffle/back/forward/repeat — matching
+// how apps like Musicolet's "Select Style" menu work (Retro uses double
+// chevrons, Stock uses rewind/fast-forward glyphs, Minimalistic uses thin
+// single chevrons, etc). Color is never touched by any pack — every icon
+// still inherits var(--text)/var(--text-dim)/var(--accent) from the CSS.
+import React from "react";
+import {
+  Play, Pause,
+  SkipBack, SkipForward,
+  ChevronLeft, ChevronRight,
+  ChevronsLeft, ChevronsRight,
+  Rewind, FastForward,
+  Shuffle,
+  Repeat, Repeat1,
+} from "lucide-react";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+
+// Each pack: cls = CSS modifier class (shape/size), icons = which glyphs to use.
+export const BUTTON_PACKS = {
+  modern: {
+    name: "Modern",
+    desc: "Default — clean circular controls",
+    cls: "tp",
+    icons: { shuffle: Shuffle, back: SkipBack, forward: SkipForward, repeat: Repeat, repeatOne: Repeat1 },
+  },
+  compact: {
+    name: "Compact",
+    desc: "Smaller, tighter spacing",
+    cls: "tp tp-compact",
+    icons: { shuffle: Shuffle, back: SkipBack, forward: SkipForward, repeat: Repeat, repeatOne: Repeat1 },
+  },
+  bold: {
+    name: "Bold",
+    desc: "Larger, heavier weight",
+    cls: "tp tp-bold",
+    icons: { shuffle: Shuffle, back: SkipBack, forward: SkipForward, repeat: Repeat, repeatOne: Repeat1 },
+  },
+  square: {
+    name: "Square",
+    desc: "Sharp corners, boxed side buttons",
+    cls: "tp tp-square",
+    icons: { shuffle: Shuffle, back: SkipBack, forward: SkipForward, repeat: Repeat, repeatOne: Repeat1 },
+  },
+  mono: {
+    name: "Mono Bracket",
+    desc: "Retro monospace, bracketed",
+    cls: "tp tp-mono",
+    icons: { shuffle: Shuffle, back: SkipBack, forward: SkipForward, repeat: Repeat, repeatOne: Repeat1 },
+  },
+  retro: {
+    name: "Retro",
+    desc: "Tape-deck double chevrons",
+    cls: "tp tp-retro",
+    icons: { shuffle: Shuffle, back: ChevronsLeft, forward: ChevronsRight, repeat: Repeat, repeatOne: Repeat1 },
+  },
+  minimal: {
+    name: "Minimalistic",
+    desc: "Thin single chevrons, no fill",
+    cls: "tp tp-minimal",
+    icons: { shuffle: Shuffle, back: ChevronLeft, forward: ChevronRight, repeat: Repeat, repeatOne: Repeat1 },
+  },
+  stock: {
+    name: "Stock",
+    desc: "Classic rewind / fast-forward glyphs",
+    cls: "tp tp-stock",
+    icons: { shuffle: Shuffle, back: Rewind, forward: FastForward, repeat: Repeat, repeatOne: Repeat1 },
+  },
+  w10: {
+    name: "W10",
+    desc: "Flat outlined row, Windows-style",
+    cls: "tp tp-w10",
+    icons: { shuffle: Shuffle, back: SkipBack, forward: SkipForward, repeat: Repeat, repeatOne: Repeat1 },
+  },
+  futuristic: {
+    name: "Futuristic",
+    desc: "Thin double chevrons, glowing active states",
+    cls: "tp tp-futuristic",
+    icons: { shuffle: Shuffle, back: ChevronsLeft, forward: ChevronsRight, repeat: Repeat, repeatOne: Repeat1 },
+  },
+};
+
+export default function TransportButtons() {
+  const { playing, shuffle, repeatMode, buttonPack } = usePlayerState();
+  const { togglePlay, next, previous, toggleShuffle, cycleRepeat } = usePlayerActions();
+
+  const pack = BUTTON_PACKS[buttonPack] || BUTTON_PACKS.modern;
+  const { shuffle: ShuffleIcon, back: BackIcon, forward: ForwardIcon, repeat, repeatOne } = pack.icons;
+  const RepeatIcon = repeatMode === "one" ? repeatOne : repeat;
+
+  return (
+    <div className={pack.cls}>
+      <button className={`tp-btn tp-side ${shuffle ? "tp-active" : ""}`} onClick={toggleShuffle}>
+        <ShuffleIcon size={18} />
+      </button>
+      <button className="tp-btn tp-side" onClick={previous}>
+        <BackIcon size={22} />
+      </button>
+      <button className="tp-btn tp-main" onClick={togglePlay}>
+        {playing ? <Pause size={26} /> : <Play size={26} style={{ marginLeft: 2 }} />}
+      </button>
+      <button className="tp-btn tp-side" onClick={next}>
+        <ForwardIcon size={22} />
+      </button>
+      <button className={`tp-btn tp-side ${repeatMode !== "off" ? "tp-active" : ""}`} onClick={cycleRepeat}>
+        <RepeatIcon size={18} />
+      </button>
+    </div>
+  );
+}
+
+=== src/components/MetadataEditModal.jsx ===
+// src/components/MetadataEditModal.jsx
+// In-memory metadata editing — never writes back to the original file on
+// disk, same platform constraint every other in-app change (Studio render,
+// track-order fix) already operates under.
+import React, { useState } from "react";
+import { X } from "lucide-react";
+import { usePlayerActions } from "../store/PlayerContext";
+
+export default function MetadataEditModal({ track, onClose }) {
+  const { updateTrackMetadata } = usePlayerActions();
+  const [title, setTitle] = useState(track.title);
+  const [artist, setArtist] = useState(track.artist);
+  const [album, setAlbum] = useState(track.album);
+  const [trackNum, setTrackNum] = useState(track.track ? String(track.track) : "");
+
+  function handleSave() {
+    updateTrackMetadata(track.id, {
+      title: title.trim() || track.title,
+      artist: artist.trim() || track.artist,
+      album: album.trim() || track.album,
+      track: trackNum === "" ? 0 : parseInt(trackNum, 10) || 0,
+    });
+    onClose();
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3 className="modal-title">Edit track info</h3>
+          <button className="modal-close-btn" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="edit-form">
+          <label className="edit-field">
+            <span>Title</span>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} />
+          </label>
+          <label className="edit-field">
+            <span>Artist</span>
+            <input value={artist} onChange={(e) => setArtist(e.target.value)} />
+          </label>
+          <label className="edit-field">
+            <span>Album</span>
+            <input value={album} onChange={(e) => setAlbum(e.target.value)} />
+          </label>
+          <label className="edit-field">
+            <span>Track #</span>
+            <input
+              type="number"
+              min="0"
+              value={trackNum}
+              onChange={(e) => setTrackNum(e.target.value)}
+            />
+          </label>
+
+          <div className="edit-form-note">
+            These edits apply in the app only — your original file on disk
+            isn't touched. Changing the album name may move this track into
+            a different album.
+          </div>
+
+          <button className="primary-btn" style={{ width: "100%" }} onClick={handleSave}>
+            Save changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+=== src/components/TopBar.jsx ===
+// src/components/TopBar.jsx
+import React from "react";
+import { Menu } from "lucide-react";
+
+const TITLES = {
+  nowplaying: "Now Playing",
+  library: "Library",
+  album: "Album",
+  eq: "Equalizer",
+  studio: "Studio",
+  playlist: "Playlist",
+  karaoke: "Karaoke Mode",
+};
+
+export default function TopBar({ onMenu, screen }) {
+  return (
+    <div className="topbar">
+      <button className="icon-btn only-mobile" onClick={onMenu}>
+        <Menu size={19} />
+      </button>
+      <div className="topbar-title">{TITLES[screen] || ""}</div>
+    </div>
+  );
+}
+
+=== src/components/Sidebar.jsx ===
+// src/components/Sidebar.jsx
+import React from "react";
+import { Disc3, Library, X, SlidersHorizontal, Wand2, Mic2, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+
+export default function Sidebar({ screen, setScreen, open, setOpen, onOpenPlaylist }) {
+  const { theme, playlists } = usePlayerState();
+  const { setTheme } = usePlayerActions();
+
+  const nav = [
+    { id: "nowplaying", label: "Now Playing", icon: Disc3 },
+    { id: "library", label: "Library", icon: Library },
+    { id: "studio", label: "Studio", icon: Wand2 },
+    { id: "karaoke", label: "Karaoke", icon: Mic2 },
+    { id: "eq", label: "Equalizer", icon: SlidersHorizontal },
+    { id: "settings", label: "Settings", icon: SettingsIcon },
+  ];
+
+  function toggleTheme() {
+    setTheme(theme === "obsidian" ? "glass" : "obsidian");
+  }
+
+  return (
+    <>
+      <div className={`scrim ${open ? "show" : ""}`} onClick={() => setOpen(false)} />
+      <aside className={`sidebar ${open ? "open" : ""}`}>
+        <div className="brand-row">
+          <div className="brand-mark" />
+          <div className="brand-text">
+            <div className="brand-name">uPod</div>
+            <div className="brand-tag">it's all about you!</div>
+          </div>
+          {/* Prominent close button, per design notes — not just tap-outside */}
+          <button className="icon-btn only-mobile" onClick={() => setOpen(false)}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <nav className="nav-list">
+          {nav.map((n) => (
+            <button
+              key={n.id}
+              className={`nav-item ${screen === n.id ? "active" : ""}`}
+              onClick={() => { setScreen(n.id); setOpen(false); }}
+            >
+              <n.icon size={18} />
+              <span>{n.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        {playlists.length > 0 && (
+          <>
+            <div className="sidebar-section-label">Playlists</div>
+            <nav className="nav-list nav-list-scroll">
+              {playlists.map((p) => (
+                <button
+                  key={p.id}
+                  className={`nav-item nav-item-playlist ${screen === "playlist" ? "" : ""}`}
+                  onClick={() => { onOpenPlaylist(p); setOpen(false); }}
+                >
+                  <span className="nav-item-playlist-dot" />
+                  <span>{p.name}</span>
+                </button>
+              ))}
+            </nav>
+          </>
+        )}
+
+        <div className="sidebar-footer">
+          <button className="theme-toggle" onClick={toggleTheme}>
+            {theme === "obsidian" ? <Sun size={15} /> : <Moon size={15} />}
+            <span>{theme === "obsidian" ? "Switch to Liquid Glass" : "Switch to Matte Obsidian"}</span>
+          </button>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+=== src/components/QueueModal.jsx ===
+import React from "react";
+import { X, ChevronUp, ChevronDown, Trash2, GripVertical } from "lucide-react";
+import NoteMark from "./NoteMark";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+
+/**
+ * QueueModal — uses the existing modal/queue classes already defined in
+ * global.css (modal-scrim, modal, queue-modal, queue-list, queue-row,
+ * queue-row-main, queue-row-title, queue-now-badge, queue-row-sub,
+ * queue-row-actions, queue-grip). No new CSS file needed.
+ *
+ * Usage from NowPlaying.jsx:
+ *   {queueOpen && <QueueModal onClose={() => setQueueOpen(false)} />}
+ */
+export default function QueueModal({ onClose }) {
+  const { queue, queueIndex } = usePlayerState();
+  const { moveQueueItem, removeQueueItem, jumpToQueueIndex } = usePlayerActions();
+
+  const moveUp = (index) => index > 0 && moveQueueItem(index, index - 1);
+  const moveDown = (index) => index < queue.length - 1 && moveQueueItem(index, index + 1);
+
+  return (
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal queue-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-title-row">
+          <div className="modal-title">Queue</div>
+          <button className="icon-btn small" onClick={onClose} aria-label="Close queue">
+            <X size={16} />
+          </button>
+        </div>
+
+        {queue.length === 0 ? (
+          <div className="empty-state">Nothing queued yet.</div>
+        ) : (
+          <div className="queue-list">
+            {queue.map((track, index) => {
+              const isCurrent = index === queueIndex;
+              return (
+                <div
+                  key={`${track.id ?? track.title}-${index}`}
+                  className={`queue-row${isCurrent ? " queue-current" : ""}`}
+                >
+                  <GripVertical size={14} className="queue-grip" />
+
+                  <button className="queue-row-main" onClick={() => jumpToQueueIndex(index)}>
+                    <div className="queue-row-title">
+                      {track.cover ? (
+                        <img
+                          src={track.cover}
+                          alt=""
+                          style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover", flexShrink: 0 }}
+                        />
+                      ) : (
+                        <NoteMark size={18} style={{ color: "var(--accent)", flexShrink: 0 }} />
+                      )}
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {track.title || "Untitled"}
+                      </span>
+                      {isCurrent && <span className="queue-now-badge">Now</span>}
+                    </div>
+                    <div className="queue-row-sub">{track.artist || "Unknown artist"}</div>
+                  </button>
+
+                  <div className="queue-row-actions">
+                    <button
+                      className="icon-btn small"
+                      disabled={index === 0}
+                      onClick={() => moveUp(index)}
+                      aria-label="Move up"
+                    >
+                      <ChevronUp size={14} />
+                    </button>
+                    <button
+                      className="icon-btn small"
+                      disabled={index === queue.length - 1}
+                      onClick={() => moveDown(index)}
+                      aria-label="Move down"
+                    >
+                      <ChevronDown size={14} />
+                    </button>
+                    <button
+                      className="icon-btn small"
+                      onClick={() => removeQueueItem(index)}
+                      aria-label="Remove from queue"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+=== src/components/NoteMark.jsx ===
+import React from "react";
+
+/**
+ * NoteMark — uPod's logo / cover-art placeholder mark.
+ * A pair of beamed eighth notes, matching the reference image the user
+ * uploaded. Deliberately NOT a treble/bass clef.
+ *
+ * Renders in `currentColor` so it can sit on any theme or accent color
+ * just by setting `color` on a parent/wrapper — no hardcoded fills.
+ *
+ * Usage:
+ *   <NoteMark size={48} />                      // default, currentColor
+ *   <NoteMark size={200} style={{ color: album.accent }} />
+ *   <NoteMark size={96} className="cover-placeholder-mark" />
+ */
+export default function NoteMark({ size = 48, className = "", style = {}, title }) {
+  return (
+    <svg
+      className={className}
+      style={style}
+      width={size}
+      height={size}
+      viewBox="0 0 480 512"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      role={title ? "img" : "presentation"}
+      aria-hidden={title ? undefined : true}
+    >
+      {title ? <title>{title}</title> : null}
+      {/* Left stem */}
+      <path
+        d="M46 108 L46 462 L96 452 L96 100 Z"
+        fill="currentColor"
+      />
+      {/* Right stem */}
+      <path
+        d="M300 60 L300 414 L350 424 L350 70 Z"
+        fill="currentColor"
+      />
+      {/* Beam connecting the two stems */}
+      <path
+        d="M46 108 L300 60 L350 70 L96 118 Z"
+        fill="currentColor"
+      />
+      {/* Left notehead (larger, lower) */}
+      <ellipse
+        cx="100"
+        cy="96"
+        rx="82"
+        ry="58"
+        transform="rotate(-18 100 96)"
+        fill="currentColor"
+      />
+      {/* Right notehead (smaller, higher) */}
+      <ellipse
+        cx="368"
+        cy="58"
+        rx="78"
+        ry="55"
+        transform="rotate(-18 368 58)"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+=== src/screens/Library.jsx ===
+// src/screens/Library.jsx
+import React, { useRef, useState } from "react";
+import { Search, X, FolderOpen, Wand2 } from "lucide-react";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+import NoteMark from "../components/NoteMark";
+
+const TABS = [
+  { id: "albums", label: "Albums" },
+  { id: "playlists", label: "Playlists" },
+  { id: "songs", label: "Songs" },
+];
+
+export default function Library({ onOpenAlbum, onOpenPlaylist }) {
+  const { albums, playlists, library, selectedFolderName, loadingLibrary } = usePlayerState();
+  const { pickFolder, playAlbumFromTrack } = usePlayerActions();
+  const [tab, setTab] = useState("albums");
+  const [query, setQuery] = useState("");
+  const inputRef = useRef(null);
+
+  const q = query.trim().toLowerCase();
+
+  const filteredAlbums = albums.filter(
+    (a) => !q || a.title.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)
+  );
+  const filteredPlaylists = playlists.filter((p) => !q || p.name.toLowerCase().includes(q));
+  const filteredSongs = library.filter(
+    (t) => !q || t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q)
+  );
+
+  function handleFiles(e) {
+    if (e.target.files && e.target.files.length > 0) {
+      pickFolder(e.target.files);
+    }
+  }
+
+  // Songs tab plays through the same real playback path as everything
+  // else — find the album that already contains this track (every track
+  // belongs to one, even untagged singles get their own album entry per
+  // metadata.js) and hand off to playAlbumFromTrack, rather than adding a
+  // second, parallel way to start playback.
+  function playSong(track) {
+    const album = albums.find((a) => a.tracks.some((t) => t.id === track.id));
+    if (album) playAlbumFromTrack(album, track);
+  }
+
+  const searchPlaceholder =
+    tab === "albums" ? "Search albums…" : tab === "playlists" ? "Search playlists…" : "Search songs…";
+
+  return (
+    <div className="lib-screen">
+      {/* Hidden native folder picker input. webkitdirectory works in Chrome/Edge/Android WebView. */}
+      <input
+        ref={inputRef}
+        type="file"
+        webkitdirectory=""
+        directory=""
+        multiple
+        style={{ display: "none" }}
+        onChange={handleFiles}
+      />
+
+      <div className="search-bar">
+        <Search size={16} />
+        <input
+          placeholder={searchPlaceholder}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        {query && (
+          <button className="icon-btn small" onClick={() => setQuery("")}>
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      <div className="tab-row">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            className={`tab-btn ${tab === t.id ? "active" : ""}`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {albums.length === 0 && !loadingLibrary && (
+        <div className="empty-state" style={{ padding: "40px 0" }}>
+          No music loaded yet.
+          <div style={{ marginTop: 12 }}>
+            <button className="primary-btn" onClick={() => inputRef.current.click()}>
+              <FolderOpen size={15} /> Choose your music folder
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loadingLibrary && <div className="empty-state">Reading your music folder…</div>}
+
+      {selectedFolderName && albums.length > 0 && (
+        <div className="folder-chip" style={{ marginBottom: 14 }}>
+          <FolderOpen size={14} />
+          <span>{selectedFolderName}</span>
+        </div>
+      )}
+
+      {albums.length > 0 && tab === "albums" && (
+        <div className="album-grid">
+          {filteredAlbums.map((al) => (
+            <button key={al.id} className="album-card" onClick={() => onOpenAlbum(al)}>
+              <div
+                className="album-cover"
+                style={{
+                  background: al.cover
+                    ? `url(${al.cover}) center/cover`
+                    : `linear-gradient(155deg, ${al.gradient[0]}, ${al.gradient[1]})`,
+                }}
+              >
+                {!al.cover && (
+                  <NoteMark size={40} style={{ color: "rgba(255,255,255,0.85)" }} />
+                )}
+              </div>
+              <div className="album-card-title">{al.title}</div>
+              <div className="album-card-artist">{al.artist}{al.year ? ` · ${al.year}` : ""}</div>
+            </button>
+          ))}
+          {filteredAlbums.length === 0 && (
+            <div className="empty-state">No albums match "{query}".</div>
+          )}
+        </div>
+      )}
+
+      {albums.length > 0 && tab === "playlists" && (
+        <div className="playlist-list">
+          {filteredPlaylists.map((p) => (
+            <button key={p.id} className="playlist-row" onClick={() => onOpenPlaylist(p)}>
+              <div className="playlist-thumb" style={{ background: "var(--accent)" }}>
+                <Wand2 size={16} color="#fff" />
+              </div>
+              <div className="playlist-row-meta">
+                <div className="playlist-row-name">{p.name}</div>
+                <div className="playlist-row-count">{p.trackIds.length} tracks</div>
+              </div>
+            </button>
+          ))}
+          {filteredPlaylists.length === 0 && (
+            <div className="empty-state">
+              {playlists.length === 0
+                ? "No playlists yet — render an effect in Studio to create one."
+                : `No playlists match "${query}".`}
+            </div>
+          )}
+        </div>
+      )}
+
+      {albums.length > 0 && tab === "songs" && (
+        <div className="track-list">
+          {filteredSongs.map((t) => (
+            <button key={t.id} className="track-row" onClick={() => playSong(t)}>
+              <span className="track-title">
+                {t.title}
+                <span style={{ color: "var(--text-dim)", fontWeight: 400 }}> — {t.artist}</span>
+              </span>
+            </button>
+          ))}
+          {filteredSongs.length === 0 && (
+            <div className="empty-state">No songs match "{query}".</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+=== src/screens/PlaylistDetail.jsx ===
+// src/screens/PlaylistDetail.jsx
+import React, { useState } from "react";
+import { ChevronLeft, Play, Pencil, Check } from "lucide-react";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+
+export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
+  const { library, queue, queueIndex, playlists } = usePlayerState();
+  const { playPlaylist, renamePlaylist } = usePlayerActions();
+  const playlist = playlists.find((p) => p.id === playlistProp.id) || playlistProp;
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(playlist.name);
+
+  const tracks = playlist.trackIds.map((id) => library.find((t) => t.id === id)).filter(Boolean);
+  const currentTrackId = queue[queueIndex]?.id;
+
+  function saveName() {
+    if (nameDraft.trim()) renamePlaylist(playlist.id, nameDraft.trim());
+    setEditingName(false);
+  }
+
+  return (
+    <div className="detail-screen">
+      <button className="back-btn" onClick={onBack}><ChevronLeft size={16} /> Back</button>
+
+      <div className="detail-header">
+        <div className="detail-cover" style={{ background: "var(--accent)" }} />
+        <div className="detail-info">
+          <div className="detail-kicker">Studio Playlist</div>
+          {editingName ? (
+            <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+              <input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)" }}
+                autoFocus
+              />
+              <button className="icon-btn small" onClick={saveName}><Check size={15} /></button>
+            </div>
+          ) : (
+            <div className="detail-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {playlist.name}
+              <button className="icon-btn small" onClick={() => setEditingName(true)}><Pencil size={13} /></button>
+            </div>
+          )}
+          <div className="detail-sub">{tracks.length} tracks</div>
+          <div className="detail-actions">
+            <button className="primary-btn" onClick={() => playPlaylist(playlist)}>
+              <Play size={15} style={{ marginLeft: -1 }} /> Play
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="track-list">
+        {tracks.map((t, i) => (
+          <button
+            key={t.id}
+            className="track-row"
+            onClick={() => playPlaylist(playlist, t)}
+            style={{ background: t.id === currentTrackId ? "var(--panel)" : "transparent" }}
+          >
+            <span className="track-n">{i + 1}</span>
+            <span className="track-title">{t.title}</span>
+          </button>
+        ))}
+        {tracks.length === 0 && <div className="empty-state">No tracks in this playlist yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+=== src/screens/Studio.jsx ===
+// src/screens/Studio.jsx
+import React, { useState } from "react";
+import { Wand2, Music2, Check } from "lucide-react";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+import { STUDIO_EFFECTS } from "../audio/studioEffects";
+
+export default function Studio({ onOpenPlaylist }) {
+  const { library, studioStatus, playlists } = usePlayerState();
+  const { renderStudioEffect } = usePlayerActions();
+  const [sourceId, setSourceId] = useState("");
+  const [effectId, setEffectId] = useState(STUDIO_EFFECTS[0].id);
+  const [format, setFormat] = useState("mp3");
+  const [lastResult, setLastResult] = useState(null);
+
+  const sourceTracks = library.filter((t) => !t.isStudioRender);
+  const sourceTrack = sourceTracks.find((t) => t.id === sourceId);
+  const rendering = studioStatus && typeof studioStatus === "string";
+  const errored = studioStatus && studioStatus.error;
+
+  async function handleRender() {
+    if (!sourceTrack) return;
+    setLastResult(null);
+    const result = await renderStudioEffect(sourceTrack, effectId, format);
+    if (result.ok) setLastResult({ effectId, track: result.track });
+  }
+
+  return (
+    <div className="lib-screen">
+      <div className="settings-group-title" style={{ marginTop: 4 }}>1. Pick a song from your library</div>
+      {sourceTracks.length === 0 ? (
+        <div className="empty-state">Load your music folder in Library first.</div>
+      ) : (
+        <select
+          value={sourceId}
+          onChange={(e) => setSourceId(e.target.value)}
+          style={{
+            width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border)",
+            background: "var(--panel)", color: "var(--text)", fontSize: 13, marginBottom: 20,
+          }}
+        >
+          <option value="">Choose a track…</option>
+          {sourceTracks.map((t) => (
+            <option key={t.id} value={t.id}>{t.title} — {t.artist}</option>
+          ))}
+        </select>
+      )}
+
+      <div className="settings-group-title">2. Pick an effect</div>
+      <div className="pack-list" style={{ marginBottom: 20 }}>
+        {STUDIO_EFFECTS.map((e) => (
+          <button
+            key={e.id}
+            className={`pack-row ${effectId === e.id ? "pack-active" : ""}`}
+            onClick={() => setEffectId(e.id)}
+          >
+            <div className="pack-meta">
+              <div className="pack-name">{e.label}</div>
+              <div className="pack-desc">{e.desc}</div>
+            </div>
+            {effectId === e.id && <Check size={16} className="pack-check" />}
+          </button>
+        ))}
+      </div>
+
+      <div className="settings-group-title">3. Output format</div>
+      <div className="theme-switch" style={{ marginBottom: 20, width: "fit-content" }}>
+        <button className={format === "mp3" ? "active" : ""} onClick={() => setFormat("mp3")}>MP3</button>
+        <button className={format === "wav" ? "active" : ""} onClick={() => setFormat("wav")}>WAV</button>
+      </div>
+
+      <button
+        className="primary-btn"
+        disabled={!sourceTrack || rendering}
+        onClick={handleRender}
+        style={{ marginBottom: 10 }}
+      >
+        <Wand2 size={15} /> {rendering ? studioStatus : "Render new file"}
+      </button>
+
+      {errored && (
+        <div className="settings-row-sub" style={{ color: "#e05555", marginBottom: 16 }}>
+          Something went wrong: {studioStatus.error}
+        </div>
+      )}
+
+      <div className="settings-row-sub" style={{ marginBottom: 24 }}>
+        This never modifies your original file — it renders a brand-new {format.toUpperCase()} and
+        files it into a playlist named after the effect.
+      </div>
+
+      {lastResult && (
+        <div className="track-order-row" style={{ marginBottom: 24 }}>
+          <span>
+            <Music2 size={13} style={{ marginRight: 6 }} />
+            Rendered "{lastResult.track.title}"
+          </span>
+          <button
+            className="pill-btn"
+            onClick={() => {
+              const pl = playlists.find((p) => p.effectId === lastResult.effectId);
+              if (pl) onOpenPlaylist(pl);
+            }}
+          >
+            Open playlist
+          </button>
+        </div>
+      )}
+
+      <div className="settings-group-title">Your effect playlists</div>
+      {playlists.length === 0 && <div className="empty-state">Nothing rendered yet.</div>}
+      <div className="playlist-list">
+        {playlists.map((p) => (
+          <button key={p.id} className="playlist-row" onClick={() => onOpenPlaylist(p)}>
+            <div className="playlist-thumb" style={{ background: "var(--accent)" }}>
+              <Wand2 size={16} color="#fff" />
+            </div>
+            <div className="playlist-row-meta">
+              <div className="playlist-row-name">{p.name}</div>
+              <div className="playlist-row-count">{p.trackIds.length} tracks</div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+=== src/screens/Karaoke.jsx ===
+// src/screens/Karaoke.jsx
+import React, { useEffect, useState } from "react";
+import { WifiOff, Sparkles, Save, Key } from "lucide-react";
+import { usePlayerState } from "../store/PlayerContext";
+import {
+  fetchLyricsOnline,
+  saveManualLyrics,
+  fetchLyricsFromGemini,
+  getGeminiKey,
+  setGeminiKey,
+} from "../online/lyrics";
+
+function useOnlineStatus() {
+  const [online, setOnline] = useState(navigator.onLine);
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", off);
+    };
+  }, []);
+  return online;
+}
+
+export default function Karaoke() {
+  const { queue, queueIndex } = usePlayerState();
+  const track = queue[queueIndex];
+  const online = useOnlineStatus();
+
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [manualDraft, setManualDraft] = useState("");
+  const [showManual, setShowManual] = useState(false);
+  const [tryingAi, setTryingAi] = useState(false);
+  const [keyDraft, setKeyDraft] = useState(getGeminiKey());
+  const [showKeyInput, setShowKeyInput] = useState(false);
+
+  useEffect(() => {
+    if (!track) return;
+    setResult(null);
+    setShowManual(false);
+    if (!online) return;
+    setLoading(true);
+    fetchLyricsOnline(track.artist, track.title).then((r) => {
+      setResult(r);
+      setLoading(false);
+    });
+  }, [track?.id, online]);
+
+  async function tryAi() {
+    if (!track) return;
+    setTryingAi(true);
+    const r = await fetchLyricsFromGemini(track.artist, track.title);
+    setResult(r);
+    setTryingAi(false);
+  }
+
+  function saveKey() {
+    setGeminiKey(keyDraft.trim());
+    setShowKeyInput(false);
+  }
+
+  function saveManual() {
+    if (!track || !manualDraft.trim()) return;
+    const entry = saveManualLyrics(track.artist, track.title, manualDraft);
+    setResult(entry);
+    setShowManual(false);
+  }
+
+  if (!track) {
+    return <div className="karaoke-screen"><div className="empty-state">Nothing playing yet.</div></div>;
+  }
+
+  return (
+    <div className="karaoke-screen">
+      <div className="karaoke-header">
+        <div className="karaoke-track-title">{track.title}</div>
+        <div className="karaoke-track-sub">{track.artist} · {track.album}</div>
+      </div>
+
+      {!online && (
+        <div className="karaoke-offline">
+          <WifiOff size={22} />
+          <div className="karaoke-offline-title">Karaoke mode needs a connection</div>
+          <div className="karaoke-offline-sub">
+            Lyrics are looked up online and cached locally the first time — once cached, they'll show up here even offline.
+          </div>
+        </div>
+      )}
+
+      {online && loading && <div className="karaoke-loading">Searching lyrics sources…</div>}
+
+      {online && !loading && result?.ok && (
+        <>
+          <div className="karaoke-source">
+            {result.fromCache ? "From your local cache" : `Found via ${result.source}`}
+            {result.synced ? " · time-synced lyrics available" : ""} · unverified, community-sourced
+          </div>
+          <div className="karaoke-lyrics">
+            {result.lyrics.split("\n").map((line, i) => (
+              <div key={i} className={/^\[.*\]$/.test(line.trim()) ? "karaoke-section" : "karaoke-line"}>
+                {line || "\u00A0"}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {online && !loading && !result?.ok && !showManual && (
+        <div className="karaoke-offline">
+          <div className="karaoke-offline-title">No lyrics found automatically</div>
+          <div className="karaoke-offline-sub">
+            {result?.notFound ? "Nothing matched this artist/title on the free lyrics database." : "The lookup failed — you can try again, paste lyrics yourself, or try an AI reconstruction."}
+          </div>
+          <div className="np-actions" style={{ marginTop: 14 }}>
+            <button className="pill-btn" onClick={() => setShowManual(true)}><Save size={13} /> Paste lyrics</button>
+            <button className="pill-btn" onClick={() => (getGeminiKey() ? tryAi() : setShowKeyInput(true))}>
+              <Sparkles size={13} /> {tryingAi ? "Asking AI…" : "Try AI reconstruction"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showManual && (
+        <div style={{ marginTop: 16 }}>
+          <textarea
+            value={manualDraft}
+            onChange={(e) => setManualDraft(e.target.value)}
+            placeholder="Paste the lyrics here — they'll be cached for next time…"
+            rows={10}
+            style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text)", fontSize: 13 }}
+          />
+          <button className="primary-btn" style={{ marginTop: 10 }} onClick={saveManual}>
+            <Save size={14} /> Save lyrics
+          </button>
+        </div>
+      )}
+
+      {showKeyInput && (
+        <div style={{ marginTop: 16, padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--panel)" }}>
+          <div className="settings-row-label" style={{ marginBottom: 6 }}><Key size={13} /> Your Gemini API key</div>
+          <div className="settings-row-sub" style={{ marginBottom: 10 }}>
+            Stored only in this browser, sent only to Google's API when you tap "Try AI reconstruction". Get a free key at aistudio.google.com.
+          </div>
+          <input
+            value={keyDraft}
+            onChange={(e) => setKeyDraft(e.target.value)}
+            placeholder="AIza…"
+            style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", marginBottom: 10 }}
+          />
+          <button className="primary-btn" onClick={saveKey}>Save key</button>
+        </div>
+      )}
+
+      {result?.source?.startsWith("AI-generated") && (
+        <div className="karaoke-fallback-note">
+          These lyrics were reconstructed by an AI model, not sourced from an official database — treat them as approximate.
+        </div>
+      )}
+    </div>
+  );
+}
+
+=== src/screens/AlbumDetail.jsx ===
+// src/screens/AlbumDetail.jsx
+import React, { useState } from "react";
+import { ChevronLeft, Play, Shuffle, Heart, Wand2, Pencil } from "lucide-react";
+import { usePlayerActions, usePlayerState } from "../store/PlayerContext";
+import NoteMark from "../components/NoteMark";
+import MetadataEditModal from "../components/MetadataEditModal";
+
+function formatDur(seconds) {
+  if (!seconds || !Number.isFinite(seconds)) return "--:--";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+export default function AlbumDetail({ album: albumProp, onBack }) {
+  const { playAlbumFromTrack, fixAlbumTrackOrder } = usePlayerActions();
+  const { queue, queueIndex, albums, trackOrderStatus } = usePlayerState();
+  const [lastFixResult, setLastFixResult] = useState(null);
+  const [editingTrack, setEditingTrack] = useState(null);
+
+  // Always read the freshest version so a track-order fix, a metadata
+  // edit, or anything else shows up immediately without re-navigating.
+  const album = albums.find((a) => a.id === albumProp.id) || albumProp;
+  const currentTrackId = queue[queueIndex]?.id;
+  const fixing = trackOrderStatus && typeof trackOrderStatus === "string";
+  const fixError = trackOrderStatus && trackOrderStatus.error;
+
+  async function handleFixOrder() {
+    setLastFixResult(null);
+    const result = await fixAlbumTrackOrder(album);
+    if (result.ok) setLastFixResult(result);
+  }
+
+  return (
+    <div className="detail-screen">
+      <button className="back-btn" onClick={onBack}>
+        <ChevronLeft size={16} /> Library
+      </button>
+
+      <div className="detail-header">
+        <div
+          className="detail-cover"
+          style={{
+            background: album.cover
+              ? `url(${album.cover}) center/cover`
+              : `linear-gradient(155deg, ${album.gradient[0]}, ${album.gradient[1]})`,
+          }}
+        >
+          {!album.cover && (
+            <NoteMark size={56} style={{ color: "rgba(255,255,255,0.85)" }} />
+          )}
+        </div>
+        <div className="detail-info">
+          <div className="detail-kicker">Album</div>
+          <div className="detail-title">{album.title}</div>
+          <div className="detail-sub">
+            {album.artist} {album.year ? `· ${album.year}` : ""} · {album.tracks.length} tracks
+          </div>
+          <div className="detail-actions">
+            <button className="primary-btn" onClick={() => playAlbumFromTrack(album, album.tracks[0])}>
+              <Play size={15} style={{ marginLeft: -1 }} /> Play
+            </button>
+            <button className="icon-btn ring"><Shuffle size={16} /></button>
+            <button className="icon-btn ring"><Heart size={16} /></button>
+          </div>
+        </div>
+      </div>
+
+      <div className="track-order-row">
+        <span className="settings-row-sub">
+          {fixError
+            ? fixError
+            : lastFixResult
+            ? `Matched ${lastFixResult.matched}/${lastFixResult.total} tracks to the online release.`
+            : "Track numbers came from your files — fix them against the real release if they look wrong."}
+        </span>
+        <button className="pill-btn" disabled={fixing} onClick={handleFixOrder}>
+          <Wand2 size={13} /> {fixing ? trackOrderStatus : "Fix track order online"}
+        </button>
+      </div>
+
+      <div className="track-list">
+        {album.tracks.map((t) => (
+          <div
+            key={t.id}
+            className="track-row-wrap"
+            style={{ background: t.id === currentTrackId ? "var(--panel)" : "transparent" }}
+          >
+            <button className="track-row-play" onClick={() => playAlbumFromTrack(album, t)}>
+              <span className="track-n">{t.trackConfirmed === false ? "?" : t.track || "–"}</span>
+              <span className="track-title">
+                {t.title}
+                {t.id === currentTrackId && (
+                  <span style={{ fontSize: 10, color: "var(--accent)", fontWeight: 700, marginLeft: 6 }}>
+                    playing
+                  </span>
+                )}
+              </span>
+              <span className="track-dur">{formatDur(null)}</span>
+            </button>
+            <button
+              className="icon-btn small track-edit-btn"
+              onClick={() => setEditingTrack(t)}
+              aria-label="Edit track info"
+            >
+              <Pencil size={13} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {editingTrack && (
+        <MetadataEditModal track={editingTrack} onClose={() => setEditingTrack(null)} />
+      )}
+    </div>
+  );
+}
+
+=== src/screens/EqScreen.jsx ===
+// src/screens/EqScreen.jsx
+import React from "react";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+import { EQ_FREQUENCIES, EQ_PRESETS } from "../audio/engine";
+
+function formatFreqLabel(hz) {
+  return hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)}K` : `${hz}`;
+}
+
+export default function EqScreen() {
+  const { eqBands, eqPreset, queue, queueIndex } = usePlayerState();
+  const { setEqBand, setEqPreset } = usePlayerActions();
+  const hasAudio = Boolean(queue[queueIndex]);
+  const presetNames = [...Object.keys(EQ_PRESETS), "Custom"];
+
+  return (
+    <div className="eq-screen">
+      {!hasAudio && (
+        <div className="empty-state" style={{ marginBottom: 16 }}>
+          The EQ applies to whatever plays next — start a track to hear changes live.
+        </div>
+      )}
+
+      <div className="eq-preset-row">
+        {presetNames.map((name) => (
+          <button
+            key={name}
+            className={`chip ${eqPreset === name ? "chip-active" : ""}`}
+            disabled={name === "Custom"}
+            onClick={() => setEqPreset(name)}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+
+      <div className="eq-bands">
+        {EQ_FREQUENCIES.map((freq, i) => (
+          <div key={freq} className="eq-band">
+            <input
+              type="range"
+              min={-12}
+              max={12}
+              step={1}
+              value={eqBands[i]}
+              orient="vertical"
+              className="eq-slider"
+              onChange={(e) => setEqBand(i, Number(e.target.value))}
+            />
+            <div className="eq-band-label">{formatFreqLabel(freq)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="settings-row-sub" style={{ textAlign: "center" }}>
+        Bands are real BiquadFilterNodes — the sound actually changes as you drag.
+      </div>
+    </div>
+  );
+}
+
+=== src/screens/NowPlaying.jsx ===
+// src/screens/NowPlaying.jsx
+import React, { useState } from "react";
+import {
+  Heart,
+  ListMusic,
+  MoreHorizontal,
+  SlidersHorizontal,
+  Mic2,
+  MessageSquare,
+  Music,
+  Maximize2,
+  Minimize2,
+} from "lucide-react";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+import TransportButtons from "../components/TransportButtons";
+import QueueModal from "../components/QueueModal";
+import NoteMark from "../components/NoteMark";
+
+function formatDur(seconds) {
+  if (!seconds || !Number.isFinite(seconds)) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
+  const { queue, queueIndex, currentTime, duration } = usePlayerState();
+  const { seek } = usePlayerActions();
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [immersive, setImmersive] = useState(false);
+  const track = queue[queueIndex];
+
+  if (!track) {
+    return (
+      <div className="np-screen">
+        <div className="empty-state" style={{ padding: "60px 0" }}>
+          Nothing playing yet — pick an album from your Library.
+        </div>
+      </div>
+    );
+  }
+
+  const progressPct = duration ? Math.min(100, (currentTime / duration) * 100) : 0;
+
+  // Shared progress bar + transport, reused as-is in both regular and
+  // immersive layouts so seeking/shuffle/repeat/play state never drifts
+  // between the two views — they're the same controls, just restyled.
+  const progressBar = (immersiveStyle) => (
+    <div className={immersiveStyle ? "np-immersive-progress" : "np-progress"}>
+      <input
+        type="range"
+        min={0}
+        max={duration || 0}
+        value={currentTime}
+        onChange={(e) => seek(Number(e.target.value))}
+        style={{ width: "100%", accentColor: immersiveStyle ? "#fff" : "var(--accent)" }}
+      />
+      <div className={immersiveStyle ? "np-immersive-time-row" : "np-time-row"}>
+        <span>{formatDur(currentTime)}</span>
+        <span>{formatDur(duration)}</span>
+      </div>
+    </div>
+  );
+
+  if (immersive) {
+    return (
+      <div className="np-immersive">
+        <div className="np-immersive-art-wrap">
+          {track.cover ? (
+            <img className="np-immersive-art-img" src={track.cover} alt="" />
+          ) : (
+            <div className="np-immersive-art-fallback">
+              <NoteMark size={90} style={{ color: "rgba(255,255,255,0.85)" }} />
+            </div>
+          )}
+          {/* Duotone: grayscale the art, then tint it with the live theme
+              accent via mix-blend-mode. No pixel sampling needed, and once
+              real per-track accent extraction (gap item 4) lands, this
+              automatically picks up the real color for free. */}
+          <div className="np-immersive-art-tint" />
+          <div className="np-immersive-art-scrim" />
+        </div>
+
+        <div className="np-immersive-content">
+          <div className="np-immersive-topbar">
+            <button
+              className="np-immersive-close"
+              onClick={() => setImmersive(false)}
+              aria-label="Exit immersive view"
+            >
+              <Minimize2 size={16} />
+            </button>
+          </div>
+
+          <div className="np-immersive-bottom">
+            <div className="np-immersive-meta">
+              <div className="np-immersive-title">{track.title}</div>
+              <button className="np-immersive-artist" onClick={onOpenAlbum}>
+                {track.artist} · {track.album}
+              </button>
+            </div>
+
+            <div className="np-immersive-pills">
+              <button className="np-pill np-pill-wide" onClick={onOpenKaraoke}>
+                <MessageSquare size={15} />
+                Lyrics
+              </button>
+              <button className="np-pill np-pill-group" aria-label="Favorite, song info, more">
+                <Heart size={15} />
+                <Music size={15} />
+                <MoreHorizontal size={15} />
+              </button>
+              <button
+                className="np-pill np-pill-icon-only"
+                onClick={() => setQueueOpen(true)}
+                aria-label="Queue"
+              >
+                <ListMusic size={16} />
+              </button>
+            </div>
+
+            {progressBar(true)}
+
+            <div className="np-immersive-transport">
+              <TransportButtons />
+            </div>
+          </div>
+        </div>
+
+        {queueOpen && <QueueModal onClose={() => setQueueOpen(false)} />}
+      </div>
+    );
+  }
+
+  const gradient = track.cover
+    ? `url(${track.cover}) center/cover`
+    : `linear-gradient(155deg, hsl(200,60%,50%), hsl(255,50%,20%))`;
+
+  return (
+    <div className="np-screen">
+      <div className="np-art" style={{ background: gradient }} onClick={onOpenAlbum}>
+        {!track.cover && (
+          <NoteMark size={80} style={{ color: "rgba(255,255,255,0.85)" }} />
+        )}
+        <button
+          className="np-art-immersive-hint"
+          onClick={(e) => {
+            e.stopPropagation();
+            setImmersive(true);
+          }}
+          aria-label="Enter immersive view"
+        >
+          <Maximize2 size={14} />
+        </button>
+      </div>
+
+      <div className="np-meta">
+        <div className="np-title">{track.title}</div>
+        <button className="np-artist" onClick={onOpenAlbum}>
+          {track.artist} · {track.album}
+        </button>
+      </div>
+
+      {progressBar(false)}
+
+      <TransportButtons />
+
+      <div className="np-actions">
+        <button className="pill-btn"><Heart size={15} /> Favorite</button>
+        <button className="pill-btn" onClick={() => setQueueOpen(true)}>
+          <ListMusic size={15} /> Queue
+        </button>
+        <button className="pill-btn" onClick={onOpenEq}><SlidersHorizontal size={15} /> EQ</button>
+        <button className="pill-btn" onClick={onOpenKaraoke}><Mic2 size={15} /> Karaoke</button>
+        <button className="pill-btn"><MoreHorizontal size={15} /></button>
+      </div>
+
+      {queueOpen && <QueueModal onClose={() => setQueueOpen(false)} />}
+    </div>
+  );
+}
+
+=== src/screens/Settings.jsx ===
+// src/screens/Settings.jsx
+import React, { useRef } from "react";
+import { FolderOpen, Check } from "lucide-react";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+import { BUTTON_PACKS } from "../components/TransportButtons";
+
+function PackPreview({ pack }) {
+  // Renders real transport markup with the pack's own CSS classes and its
+  // own icon set, so the preview is the actual styling and glyphs, not a
+  // mock image. Non-interactive.
+  const { shuffle: ShuffleIcon, back: BackIcon, forward: ForwardIcon, repeat: RepeatIcon } = pack.icons;
+  return (
+    <div className={pack.cls} style={{ marginTop: 0 }}>
+      <button className="tp-btn tp-side" tabIndex={-1}><ShuffleIcon size={14} /></button>
+      <button className="tp-btn tp-side" tabIndex={-1}><BackIcon size={16} /></button>
+      <button className="tp-btn tp-main" tabIndex={-1}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20" /></svg>
+      </button>
+      <button className="tp-btn tp-side" tabIndex={-1}><ForwardIcon size={16} /></button>
+      <button className="tp-btn tp-side" tabIndex={-1}><RepeatIcon size={14} /></button>
+    </div>
+  );
+}
+
+export default function Settings() {
+  const { theme, buttonPack, selectedFolderName, albums, library } = usePlayerState();
+  const { setTheme, setButtonPack, pickFolder } = usePlayerActions();
+  const inputRef = useRef(null);
+
+  function handleFiles(e) {
+    if (e.target.files && e.target.files.length > 0) {
+      pickFolder(e.target.files);
+    }
+  }
+
+  const packEntries = Object.entries(BUTTON_PACKS); // [id, packDef][]
+
+  return (
+    <div className="settings-screen">
+      <input
+        ref={inputRef}
+        type="file"
+        webkitdirectory=""
+        directory=""
+        multiple
+        style={{ display: "none" }}
+        onChange={handleFiles}
+      />
+
+      <div>
+        <div className="settings-group-title">Library</div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">Music folder</div>
+            <div className="settings-row-sub">
+              {selectedFolderName || "No folder selected yet"}
+            </div>
+          </div>
+          <button className="ghost-btn" onClick={() => inputRef.current.click()}>
+            <FolderOpen size={14} style={{ marginRight: 6 }} />
+            Change
+          </button>
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">Albums loaded</div>
+            <div className="settings-row-sub">{library?.length || 0} tracks total</div>
+          </div>
+          <div className="settings-row-value">{albums?.length || 0}</div>
+        </div>
+      </div>
+
+      <div>
+        <div className="settings-group-title">Appearance</div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">Theme</div>
+            <div className="settings-row-sub">Liquid Glass or Matte Obsidian</div>
+          </div>
+          <div className="theme-switch">
+            <button
+              className={theme !== "obsidian" ? "active" : ""}
+              onClick={() => setTheme("glass")}
+            >
+              Glass
+            </button>
+            <button
+              className={theme === "obsidian" ? "active" : ""}
+              onClick={() => setTheme("obsidian")}
+            >
+              Obsidian
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="settings-group-title">Transport Buttons</div>
+        <div className="settings-row-sub" style={{ marginBottom: 12 }}>
+          Shape, size, and icon glyphs change per pack. Color always follows
+          your theme and the current album's accent — no pack has its own colors.
+        </div>
+
+        <div className="pack-list">
+          {packEntries.map(([id, pack]) => (
+            <button
+              key={id}
+              className={`pack-row ${buttonPack === id ? "pack-active" : ""}`}
+              onClick={() => setButtonPack(id)}
+            >
+              <div className="pack-preview">
+                <PackPreview pack={pack} />
+              </div>
+              <div className="pack-meta">
+                <div className="pack-name">{pack.name}</div>
+                <div className="pack-desc">{pack.desc}</div>
+              </div>
+              {buttonPack === id && <Check size={16} className="pack-check" />}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="settings-group-title">About</div>
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">uPod</div>
+            <div className="settings-row-sub">it's all about you!</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+=== src/styles/new-button-packs.css ===
+/* ============================================================
+   New transport button packs (Sprint batch 1)
+   Append this block to global.css, after the existing .tp-mono rules.
+   Every rule still only reads var(--text)/var(--text-dim)/var(--accent)/
+   var(--border) — no pack introduces its own color.
+   ============================================================ */
+
+/* Retro — tape-deck feel: bigger gaps, chunkier double-chevron side icons,
+   a slightly squashed circular main button. */
+.tp-retro { gap: 20px; }
+.tp-retro .tp-side { color: var(--text); }
+.tp-retro .tp-main { width: 56px; height: 48px; border-radius: 28px; }
+
+/* Minimalistic — no filled main button at all, everything is a plain
+   glyph at the same visual weight, tightly packed. */
+.tp-minimal { gap: 22px; }
+.tp-minimal .tp-main {
+  background: none;
+  color: var(--text);
+  box-shadow: none;
+  border: none;
+  width: auto;
+  height: auto;
+}
+.tp-minimal .tp-side { color: var(--text-dim); }
+.tp-minimal .tp-side.tp-active { color: var(--accent); }
+
+/* Stock — Android system-player proportions: modest main button, side
+   icons the same size as the main one, evenly spaced. */
+.tp-stock { gap: 16px; }
+.tp-stock .tp-side { width: 40px; height: 40px; }
+.tp-stock .tp-main { width: 52px; height: 52px; box-shadow: none; }
+
+/* W10 — flat row, everything outlined, no shadows, no circular fill;
+   Windows 10 media flyout look. */
+.tp-w10 { gap: 14px; }
+.tp-w10 .tp-side { border: 1px solid var(--border); border-radius: 6px; width: 32px; height: 32px; }
+.tp-w10 .tp-main {
+  background: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 44px;
+  height: 32px;
+  box-shadow: none;
+}
+
+/* Futuristic — thin, wide-spaced, glowing accent on active states only. */
+.tp-futuristic { gap: 24px; }
+.tp-futuristic .tp-side { color: var(--text-dim); }
+.tp-futuristic .tp-side.tp-active {
+  color: var(--accent);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 70%, transparent));
+}
+.tp-futuristic .tp-main {
+  width: 54px;
+  height: 54px;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent), var(--shadow);
+}
+
+=== src/styles/theme-patch.css ===
+/* ============================================================
+   THEME PATCH — replace the existing `:root { ... }` block in
+   global.css with this, and add the `[data-theme="obsidian"]`
+   block right after it. Nothing else in global.css needs to change
+   — every rule already reads these same variable names.
+
+   Wiring: set `data-theme` on the `.upod-root` element from state.theme:
+     <div className="upod-root" data-theme={state.theme}>
+   theme is 'glass' (default, uses :root) or 'obsidian' (override below).
+   ============================================================ */
+
+:root {
+  /* Liquid Glass — brighter, more layered, more specular light */
+  --bg: #E7EAF5;
+  --bg-img:
+    radial-gradient(circle at 12% -5%, rgba(255,255,255,0.95), transparent 42%),
+    radial-gradient(circle at 88% 105%, rgba(200,210,255,0.75), transparent 52%),
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,0.25), transparent 70%);
+  --panel: rgba(255,255,255,0.46);
+  --panel-strong: rgba(255,255,255,0.68);
+  --border: rgba(255,255,255,0.8);
+  --text: #1B1D2A;
+  --text-dim: rgba(27,29,42,0.55);
+  --blur: 28px;
+  --sidebar: rgba(255,255,255,0.4);
+  --shadow: 0 10px 36px rgba(60,50,120,0.18), inset 0 1px 0 rgba(255,255,255,0.5);
+  --specular: linear-gradient(120deg, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.18) 28%, rgba(255,255,255,0) 55%);
+  --glass-border-top: 1px solid rgba(255,255,255,0.92);
+}
+
+.upod-root[data-theme="obsidian"] {
+  /* Matte Obsidian — near-black, low-sheen, cool undertone, no glass glow */
+  --bg: #0A0A0C;
+  --bg-img:
+    radial-gradient(circle at 15% 0%, rgba(255,255,255,0.04), transparent 45%),
+    radial-gradient(circle at 85% 100%, rgba(255,255,255,0.03), transparent 55%);
+  --panel: rgba(255,255,255,0.055);
+  --panel-strong: rgba(255,255,255,0.09);
+  --border: rgba(255,255,255,0.1);
+  --text: #F2F2F5;
+  --text-dim: rgba(242,242,245,0.5);
+  --blur: 18px;
+  --sidebar: rgba(255,255,255,0.04);
+  --shadow: 0 10px 30px rgba(0,0,0,0.5);
+  --specular: linear-gradient(120deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.015) 30%, rgba(255,255,255,0) 55%);
+  --glass-border-top: 1px solid rgba(255,255,255,0.12);
+}
+
+/* Obsidian gets its own transition curve so switching themes feels
+   deliberate rather than jarring — slightly slower, no bounce. */
+.upod-root {
+  transition: background 0.4s ease, color 0.3s ease;
+}
+
+=== src/styles/global.css ===
+/* src/styles/global.css
+   Extracted from the uPod prototype. Class names are unchanged on purpose
+   so future phases (Settings/EQ/Karaoke/Studio) can drop straight in.
+
+   THEME: :root holds the Liquid Glass variables (default). The
+   [data-theme="obsidian"] block below overrides them for Matte Obsidian.
+   App.jsx sets data-theme={state.theme} on .upod-root, so switching
+   themes in Settings/Sidebar now actually re-colors the whole app. */
+
+:root {
+  --bg: #E7EAF5;
+  --bg-img:
+    radial-gradient(circle at 12% -5%, rgba(255,255,255,0.95), transparent 42%),
+    radial-gradient(circle at 88% 105%, rgba(200,210,255,0.75), transparent 52%),
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,0.25), transparent 70%);
+  --panel: rgba(255,255,255,0.46);
+  --panel-strong: rgba(255,255,255,0.68);
+  --border: rgba(255,255,255,0.8);
+  --text: #1B1D2A;
+  --text-dim: rgba(27,29,42,0.55);
+  --blur: 28px;
+  --sidebar: rgba(255,255,255,0.4);
+  --shadow: 0 10px 36px rgba(60,50,120,0.18), inset 0 1px 0 rgba(255,255,255,0.5);
+  --specular: linear-gradient(120deg, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.18) 28%, rgba(255,255,255,0) 55%);
+  --glass-border-top: 1px solid rgba(255,255,255,0.92);
+}
+
+.upod-root[data-theme="obsidian"] {
+  --bg: #0A0A0C;
+  --bg-img:
+    radial-gradient(circle at 15% 0%, rgba(255,255,255,0.04), transparent 45%),
+    radial-gradient(circle at 85% 100%, rgba(255,255,255,0.03), transparent 55%);
+  --panel: rgba(255,255,255,0.055);
+  --panel-strong: rgba(255,255,255,0.09);
+  --border: rgba(255,255,255,0.1);
+  --text: #F2F2F5;
+  --text-dim: rgba(242,242,245,0.5);
+  --blur: 18px;
+  --sidebar: rgba(255,255,255,0.04);
+  --shadow: 0 10px 30px rgba(0,0,0,0.5);
+  --specular: linear-gradient(120deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.015) 30%, rgba(255,255,255,0) 55%);
+  --glass-border-top: 1px solid rgba(255,255,255,0.12);
+}
+
+html, body, #root { height: 100%; margin: 0; }
+
+* { box-sizing: border-box; }
+.upod-root { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg-img), var(--bg); color: var(--text); width: 100%; height: 100vh; border-radius: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; transition: background .4s ease, color .3s ease; }
+.shell { display: flex; flex: 1; min-height: 0; }
+.scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.4); opacity: 0; pointer-events: none; transition: opacity .25s ease; z-index: 20; }
+.scrim.show { opacity: 1; pointer-events: auto; }
+.sidebar { width: 240px; flex-shrink: 0; background: var(--sidebar); backdrop-filter: blur(var(--blur)) saturate(1.6); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.6); border-right: var(--glass-border-top); box-shadow: inset -1px 0 0 rgba(255,255,255,0.15); display: flex; flex-direction: column; padding: 18px 14px; position: relative; z-index: 21; }
+.brand-row { display: flex; align-items: center; gap: 10px; padding: 4px 6px 18px; }
+.brand-mark { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(155deg, var(--accent), color-mix(in srgb, var(--accent) 40%, #000)); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 45%, transparent); }
+.brand-name { font-weight: 700; font-size: 15px; letter-spacing: -0.02em; }
+.brand-tag { font-size: 10.5px; color: var(--text-dim); }
+.nav-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.nav-item { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 10px; border: none; background: transparent; color: var(--text-dim); font-size: 13.5px; font-weight: 500; cursor: pointer; text-align: left; transition: background .15s, color .15s; }
+.nav-item:hover { background: var(--panel); color: var(--text); }
+.nav-item.active { background: var(--panel-strong); color: var(--text); box-shadow: var(--shadow); }
+.nav-item.active svg { color: var(--accent); }
+.nav-divider { height: 1px; background: var(--border); margin: 10px 0; }
+.nav-section-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); padding: 0 10px; margin-bottom: 6px; }
+.folder-chip { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 9px; background: var(--panel); font-size: 11.5px; color: var(--text-dim); }
+.nav-playlists { display: flex; flex-direction: column; gap: 1px; }
+.nav-playlist-item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 9px; border: none; background: transparent; color: var(--text); font-size: 12.5px; cursor: pointer; text-align: left; }
+.nav-playlist-item:hover { background: var(--panel); }
+.nav-playlist-item.add { color: var(--text-dim); }
+.nav-playlist-item .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.pl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-footer { margin-top: auto; padding-top: 10px; }
+.theme-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 10px; border-radius: 10px; border: var(--glass-border-top); background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.topbar { display: flex; align-items: center; gap: 8px; padding: 14px 20px; backdrop-filter: blur(var(--blur)); -webkit-backdrop-filter: blur(var(--blur)); }
+.topbar-title { font-weight: 700; font-size: 15px; flex: 1; }
+.icon-btn { border: none; background: var(--panel); color: var(--text); width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: var(--shadow); }
+.icon-btn.ring { background: transparent; border: 1px solid var(--border); box-shadow: none; }
+.icon-btn.small { width: 28px; height: 28px; background: transparent; box-shadow: none; }
+.icon-btn:disabled { opacity: 0.35; cursor: default; }
+.only-mobile { display: none; }
+.content { flex: 1; overflow-y: auto; padding: 0 20px 100px; }
+.np-screen { display: flex; flex-direction: column; align-items: center; padding-top: 10px; max-width: 380px; margin: 0 auto; }
+.np-art { width: 240px; height: 240px; border-radius: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 20px 50px -12px color-mix(in srgb, var(--accent) 55%, transparent), var(--shadow); position: relative; border: var(--glass-border-top); overflow: hidden; }
+.np-art::before { content: ""; position: absolute; inset: 0; background: var(--specular); mix-blend-mode: overlay; }
+.np-art-immersive-hint { position: absolute; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 8px; border: none; background: rgba(0,0,0,0.28); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.np-meta { text-align: center; margin-top: 22px; }
+.effect-badge { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); margin-bottom: 8px; }
+.rendering-dot { font-weight: 400; color: var(--accent); margin-left: 6px; }
+.np-title { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+.np-artist { border: none; background: none; color: var(--text-dim); font-size: 13px; margin-top: 4px; cursor: pointer; }
+.np-progress { width: 100%; margin-top: 22px; }
+.np-progress-track { height: 4px; background: var(--panel); border-radius: 4px; overflow: hidden; }
+.np-progress-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+.np-time-row { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-dim); margin-top: 6px; }
+.np-actions { display: flex; gap: 8px; margin-top: 26px; flex-wrap: wrap; justify-content: center; }
+.pill-btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px; border: var(--glass-border-top); background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer; backdrop-filter: blur(var(--blur)); }
+.pill-btn:disabled { opacity: 0.4; cursor: default; }
+.pill-glass { background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.35); color: #fff; backdrop-filter: blur(20px); }
+.np-effects { width: 100%; margin-top: 30px; }
+.np-effects-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 8px; }
+.np-effects-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip { padding: 7px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); color: var(--text); font-size: 11.5px; cursor: pointer; }
+.chip-active { background: var(--accent); color: #fff; border-color: transparent; }
+.shuffle-toast { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); background: var(--panel-strong); border: 1px solid var(--border); backdrop-filter: blur(var(--blur)); color: var(--text); font-size: 11px; padding: 7px 14px; border-radius: 999px; box-shadow: var(--shadow); z-index: 10; white-space: nowrap; }
+.np-immersive { position: relative; margin: -1px -20px -100px; height: calc(100% + 100px); min-height: 680px; display: flex; flex-direction: column; }
+.np-immersive-scrim { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.1) 40%, rgba(0,0,0,0.75) 100%); }
+.np-immersive-content { position: relative; flex: 1; display: flex; flex-direction: column; padding: 20px 24px 30px; }
+.np-immersive-bottom { margin-top: auto; max-width: 380px; }
+.mini-player { position: absolute; left: 12px; right: 12px; bottom: 12px; height: 58px; border-radius: 18px; background: var(--panel-strong); backdrop-filter: blur(var(--blur)) saturate(1.6); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.6); border: var(--glass-border-top); box-shadow: var(--shadow); display: flex; align-items: center; gap: 10px; padding: 0 10px; cursor: pointer; z-index: 15; }
+.mini-art { width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; }
+.mini-meta { flex: 1; min-width: 0; }
+.mini-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.mini-fx-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.mini-artist { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-play { width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+.search-bar { display: flex; align-items: center; gap: 9px; padding: 11px 14px; border-radius: 14px; background: var(--panel); border: var(--glass-border-top); margin: 16px 0 12px; color: var(--text-dim); backdrop-filter: blur(var(--blur)); position: sticky; top: 0; z-index: 3; }
+.search-bar input { border: none; background: none; outline: none; color: var(--text); font-size: 13px; flex: 1; }
+.tab-row { display: flex; gap: 6px; padding: 0 0 14px; position: sticky; top: 54px; z-index: 2; }
+.tab-btn { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); color: var(--text-dim); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.tab-btn.active { background: var(--accent); color: #fff; border-color: transparent; }
+.album-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 16px; }
+.album-card { border: none; background: none; text-align: left; cursor: pointer; padding: 0; color: var(--text); }
+.album-cover { width: 100%; aspect-ratio: 1; border-radius: 16px; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow); margin-bottom: 8px; border: var(--glass-border-top); position: relative; overflow: hidden; }
+.album-cover::before { content: ""; position: absolute; inset: 0; background: var(--specular); mix-blend-mode: overlay; }
+.album-card-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.album-card-artist { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.playlist-list { display: flex; flex-direction: column; gap: 6px; }
+.playlist-row { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 12px; border: none; background: var(--panel); cursor: pointer; text-align: left; }
+.playlist-thumb { width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.playlist-row-meta { flex: 1; min-width: 0; }
+.playlist-row-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.playlist-row-count { font-size: 11px; color: var(--text-dim); }
+.song-flat-list { display: flex; flex-direction: column; gap: 2px; }
+.song-row { display: flex; align-items: center; gap: 12px; padding: 8px 6px; border-radius: 10px; }
+.song-row:hover { background: var(--panel); }
+.song-row-art { width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0; }
+.song-row-meta { flex: 1; min-width: 0; }
+.song-row-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.song-row-sub { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.song-row-dur { font-size: 11px; color: var(--text-dim); }
+.empty-state { color: var(--text-dim); font-size: 12.5px; padding: 30px 0; text-align: center; grid-column: 1/-1; }
+.detail-screen { padding-top: 14px; }
+.back-btn { display: flex; align-items: center; gap: 4px; border: none; background: none; color: var(--text-dim); font-size: 12.5px; cursor: pointer; padding: 6px 0; margin-bottom: 10px; }
+.detail-header { display: flex; gap: 18px; margin-bottom: 18px; flex-wrap: wrap; }
+.detail-cover { width: 140px; height: 140px; border-radius: 18px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; box-shadow: var(--shadow); position: relative; border: var(--glass-border-top); }
+.cover-edit-btn { position: absolute; bottom: 8px; display: flex; align-items: center; gap: 5px; font-size: 10px; padding: 5px 9px; border-radius: 999px; border: none; background: rgba(0,0,0,0.45); color: #fff; cursor: pointer; }
+.detail-info { flex: 1; min-width: 180px; }
+.detail-kicker { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+.detail-title { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; margin: 2px 0 4px; }
+.detail-sub { font-size: 12.5px; color: var(--text-dim); margin-bottom: 14px; }
+.detail-actions { display: flex; align-items: center; gap: 8px; }
+.primary-btn { display: flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: 999px; border: none; background: var(--accent); color: #fff; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.ghost-btn { padding: 9px 16px; border-radius: 999px; border: 1px solid var(--border); background: none; color: var(--text); font-size: 12.5px; cursor: pointer; }
+.track-order-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--border); margin-bottom: 14px; flex-wrap: wrap; }
+.track-list { display: flex; flex-direction: column; gap: 1px; }
+.track-row { display: flex; align-items: center; gap: 12px; padding: 9px 8px; border-radius: 9px; border: none; background: none; cursor: pointer; text-align: left; width: 100%; color: var(--text); }
+.track-row:hover { background: var(--panel); }
+.track-n { width: 18px; font-size: 11.5px; color: var(--text-dim); }
+.track-title { flex: 1; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.track-dur { font-size: 11.5px; color: var(--text-dim); }
+.dirty-badge { font-size: 9.5px; padding: 2px 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); font-weight: 600; }
+.modal-scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 20px; }
+.modal { width: 100%; max-width: 320px; background: var(--panel-strong); backdrop-filter: blur(var(--blur)); border: var(--glass-border-top); border-radius: 20px; padding: 20px; box-shadow: var(--shadow); max-height: 80%; overflow-y: auto; }
+.modal-title { font-size: 15px; font-weight: 700; margin-bottom: 16px; }
+.modal-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.modal-title-row .modal-title { margin-bottom: 0; }
+.modal-field { margin-bottom: 14px; }
+.modal-field label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 5px; }
+.modal-field input { width: 100%; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--border); background: var(--panel); color: var(--text); font-size: 12.5px; }
+.modal-cover-row { display: flex; align-items: center; gap: 10px; }
+.modal-cover-preview { width: 46px; height: 46px; border-radius: 10px; flex-shrink: 0; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.queue-modal { max-width: 360px; }
+.queue-list { display: flex; flex-direction: column; gap: 4px; }
+.queue-row { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 10px; }
+.queue-row.queue-current { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.queue-grip { color: var(--text-dim); flex-shrink: 0; }
+.queue-row-main { flex: 1; min-width: 0; border: none; background: none; text-align: left; cursor: pointer; color: var(--text); padding: 0; }
+.queue-row-title { font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-now-badge { font-size: 9px; font-weight: 700; color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); padding: 2px 6px; border-radius: 999px; flex-shrink: 0; }
+.queue-row-sub { font-size: 10.5px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-row-actions { display: flex; gap: 3px; flex-shrink: 0; }
+.karaoke-screen { padding-top: 14px; }
+.karaoke-header { margin-bottom: 16px; }
+.karaoke-track-title { font-size: 18px; font-weight: 700; }
+.karaoke-track-sub { font-size: 12.5px; color: var(--text-dim); }
+.karaoke-offline { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 40px 20px; color: var(--text-dim); }
+.karaoke-offline-title { font-size: 14px; font-weight: 700; color: var(--text); }
+.karaoke-offline-sub { font-size: 12px; max-width: 280px; }
+.karaoke-loading { color: var(--text-dim); font-size: 12.5px; padding: 20px 0; }
+.karaoke-source { font-size: 10.5px; color: var(--text-dim); margin-bottom: 14px; }
+.karaoke-lyrics { display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.6; }
+.karaoke-section { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); font-weight: 700; margin-top: 10px; }
+.karaoke-line { color: var(--text); }
+.karaoke-fallback-note { margin-top: 20px; font-size: 11px; color: var(--text-dim); border-top: 1px solid var(--border); padding-top: 14px; }
+.eq-screen { padding-top: 16px; }
+.eq-preset-row { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 26px; }
+.eq-bands { display: flex; justify-content: space-between; align-items: flex-end; height: 190px; padding: 20px 4px 0; margin-bottom: 26px; background: var(--panel); border-radius: 18px; border: var(--glass-border-top); }
+.eq-band { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 1; height: 100%; }
+.eq-slider { -webkit-appearance: slider-vertical; writing-mode: bt-lr; width: 4px; height: 130px; accent-color: var(--accent); }
+.eq-band-label { font-size: 9.5px; color: var(--text-dim); }
+.eq-extra { display: flex; flex-direction: column; gap: 14px; }
+.eq-extra-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+.eq-extra-row span:nth-child(2) { flex: 1; }
+.dot-icon { width: 20px; height: 20px; border-radius: 6px; background: var(--panel); display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; }
+.h-slider { width: 100px; accent-color: var(--accent); }
+.settings-screen { padding-top: 14px; display: flex; flex-direction: column; gap: 26px; }
+.settings-group-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 10px; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.settings-row:last-child { border-bottom: none; }
+.settings-row-label { font-size: 13px; font-weight: 600; }
+.settings-row-sub { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+.settings-row-value { font-size: 12px; color: var(--accent); font-weight: 600; }
+.theme-switch { display: flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.theme-switch button { padding: 6px 12px; border: none; background: none; color: var(--text-dim); font-size: 11.5px; cursor: pointer; }
+.theme-switch button.active { background: var(--accent); color: #fff; }
+.toggle { width: 40px; height: 24px; border-radius: 999px; border: none; background: var(--panel); position: relative; cursor: pointer; flex-shrink: 0; }
+.toggle.on { background: var(--accent); }
+.toggle-knob { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .18s ease; }
+.toggle.on .toggle-knob { transform: translateX(16px); }
+.pack-list { display: flex; flex-direction: column; gap: 8px; }
+.pack-row { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 14px; border: 1px solid var(--border); background: var(--panel); cursor: pointer; text-align: left; }
+.pack-row.pack-active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+.pack-preview { width: 100px; flex-shrink: 0; transform: scale(0.6); transform-origin: left center; pointer-events: none; color: var(--text); }
+.pack-meta { flex: 1; min-width: 0; }
+.pack-name { font-size: 12.5px; font-weight: 700; }
+.pack-desc { font-size: 10.5px; color: var(--text-dim); }
+.pack-check { color: var(--accent); flex-shrink: 0; }
+
+/* Transport "font styles" — color always inherited (--text/--text-dim/--accent). Never custom hues. */
+.tp { display: flex; align-items: center; gap: 18px; margin-top: 26px; color: var(--text); }
+.tp-btn { border: none; background: none; color: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.tp-side { color: var(--text-dim); }
+.tp-side.tp-active { color: var(--accent); }
+.tp-main { color: #fff; background: var(--accent); border-radius: 50%; width: 58px; height: 58px; box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 55%, transparent); border: var(--glass-border-top); }
+
+.tp-compact { gap: 10px; }
+.tp-compact .tp-main { width: 40px; height: 40px; box-shadow: none; }
+
+.tp-bold .tp-side { color: var(--text); }
+.tp-bold .tp-main { width: 64px; height: 64px; }
+
+.tp-square .tp-main { border-radius: 16px; }
+.tp-square .tp-side { border: 1px solid var(--border); border-radius: 10px; width: 34px; height: 34px; }
+
+.tp-mono { font-family: 'Courier New', monospace; gap: 10px; }
+.tp-mono .tp-btn { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 9px; color: var(--text); }
+.tp-mono .tp-main { background: var(--accent); color: #fff; font-size: 14px; border: none; border-radius: 6px; padding: 8px 14px; }
+.tp-mono .tp-side.tp-active { color: var(--accent); border-color: var(--accent); }
+
+@media (max-width: 720px) {
+  .sidebar { position: absolute; top: 0; bottom: 0; left: 0; transform: translateX(-100%); transition: transform .25s ease; z-index: 22; box-shadow: 0 0 40px rgba(0,0,0,0.25); }
+  .sidebar.open { transform: translateX(0); }
+  .only-mobile { display: flex; }
+  .only-desktop { display: none; }
+  .np-art { width: 190px; height: 190px; }
+}
+
+/* ============================================================
+   Immersive Now Playing (np-immersive)
+   Full-bleed duotone cover art with theme-aware scrim + controls.
+   Mobile: stacked. >=720px landscape: split into two columns.
+   The duotone tint uses var(--accent) via mix-blend-mode, so it
+   automatically tracks whatever the current theme/accent is —
+   no separate "immersive theme" to maintain.
+   ============================================================ */
+
+.np-immersive {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  overflow: hidden;
+}
+
+.np-immersive-art-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+.np-immersive-art-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  filter: grayscale(1) contrast(1.08) brightness(0.95);
+}
+
+.np-immersive-art-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(155deg, hsl(200, 60%, 20%), hsl(255, 50%, 10%));
+}
+
+.np-immersive-art-tint {
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  mix-blend-mode: color;
+  opacity: 0.9;
+}
+
+.np-immersive-art-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.1) 0%,
+    rgba(0, 0, 0, 0.05) 35%,
+    rgba(0, 0, 0, 0.55) 70%,
+    rgba(0, 0, 0, 0.9) 100%
+  );
+}
+
+.np-immersive-content {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top, 14px) 22px 24px;
+}
+
+.np-immersive-topbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.np-immersive-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: none;
+  background: rgba(0, 0, 0, 0.32);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.np-immersive-bottom {
+  margin-top: auto;
+  width: 100%;
+  max-width: 380px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.np-immersive-meta {
+  text-align: center;
+}
+
+.np-immersive-title {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #fff;
+}
+
+.np-immersive-artist {
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 13.5px;
+  margin-top: 4px;
+  cursor: pointer;
+}
+
+.np-immersive-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.np-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 38px;
+  border-radius: 19px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #fff;
+  cursor: pointer;
+  padding: 0 16px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.np-pill-wide { flex: 1; }
+.np-pill-group { flex: 1.2; }
+.np-pill-icon-only { width: 38px; padding: 0; flex: 0 0 38px; }
+
+.np-immersive-progress { margin-top: 20px; }
+.np-immersive-progress input[type="range"] { width: 100%; accent-color: #fff; }
+
+.np-immersive-time-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.65);
+  margin-top: 5px;
+}
+
+.np-immersive-transport { margin-top: 16px; }
+/* TransportButtons renders var(--text)/var(--text-dim)/var(--accent) —
+   override those three to white/translucent-white just inside immersive
+   mode so the buttons stay legible over the dark art, in either theme. */
+.np-immersive-transport .tp-btn { color: #fff; }
+.np-immersive-transport .tp-btn.tp-side { color: rgba(255, 255, 255, 0.7); }
+.np-immersive-transport .tp-btn.tp-active { color: #fff; }
+.np-immersive-transport .tp-main {
+  background: #fff;
+  color: #000;
+}
+
+/* Landscape / tablet split: art left half, controls right half. */
+@media (min-width: 720px) and (orientation: landscape) {
+  .np-immersive { flex-direction: row; }
+  .np-immersive-art-wrap { position: static; width: 50%; height: 100%; flex-shrink: 0; }
+  .np-immersive-content {
+    width: 50%;
+    padding: 24px 40px;
+    justify-content: center;
+  }
+  .np-immersive-bottom { margin-top: 0; }
+  .np-immersive-topbar { position: absolute; top: 18px; right: 18px; width: auto; }
+  .np-immersive-meta { text-align: left; }
+  .np-immersive-pills { justify-content: flex-start; }
+}
+
+/* ============================================================
+   Sidebar playlist shortcuts (batch 6)
+   ============================================================ */
+
+.sidebar-section-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  padding: 10px 10px 6px;
+}
+
+.nav-list-scroll {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.nav-item-playlist {
+  gap: 10px;
+}
+
+.nav-item-playlist-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   Metadata editing (batch 7)
+   ============================================================ */
+
+/* AlbumDetail's per-track row needs an edit icon alongside the play
+   button, so it's a wrapper div containing two real buttons — not one
+   button nested in another (invalid HTML). Visually identical to the
+   old single .track-row. PlaylistDetail still uses .track-row directly
+   and is untouched. */
+.track-row-wrap {
+  display: flex;
+  align-items: center;
+  border-radius: 9px;
+  transition: background 0.15s;
+}
+
+.track-row-play {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 8px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+}
+
+.track-edit-btn {
+  flex-shrink: 0;
+  margin-right: 6px;
+  opacity: 0.55;
+}
+
+.track-edit-btn:hover {
+  opacity: 1;
+}
+
+.edit-form {
+  padding: 18px 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.edit-field input {
+  font-size: 14px;
+  text-transform: none;
+  letter-spacing: normal;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  outline: none;
+}
+
+.edit-field input:focus {
+  border-color: var(--accent);
+}
+
+.edit-form-note {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+=== src/styles/queue-modal.css ===
+/* ============================================
+   Queue Modal — append this block to global.css
+   Uses the same CSS variables as the rest of uPod:
+   --bg, --panel, --text, --text-dim, --accent, --border, --blur
+   ============================================ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 200;
+  animation: modal-fade-in 0.15s ease-out;
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-sheet {
+  width: 100%;
+  max-width: 480px;
+  max-height: 78vh;
+  background: var(--panel);
+  backdrop-filter: blur(var(--blur, 20px));
+  -webkit-backdrop-filter: blur(var(--blur, 20px));
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 24px 24px 0 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-slide-up 0.2s ease-out;
+}
+
+@keyframes modal-slide-up {
+  from { transform: translateY(24px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 20px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+
+.modal-close-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.15s, transform 0.15s;
+}
+
+.modal-close-btn:hover {
+  background: var(--border);
+  transform: scale(1.05);
+}
+
+.queue-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 20px;
+  color: var(--text-dim);
+}
+
+.queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px 20px;
+  overflow-y: auto;
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 14px;
+  transition: background 0.15s;
+}
+
+.queue-item-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.queue-item-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: none;
+  border: none;
+  padding: 6px 4px;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.queue-item-art {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.queue-item-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.queue-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.queue-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-item-artist {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 3px 8px;
+  flex-shrink: 0;
+}
+
+.queue-item-controls {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.queue-ctrl-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.queue-ctrl-btn:hover:not(:disabled) {
+  background: var(--border);
+  color: var(--text);
+}
+
+.queue-ctrl-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.queue-ctrl-remove:hover:not(:disabled) {
+  color: #ff5c5c;
+  border-color: #ff5c5c;
+}
+
+=== src/App.jsx ===
+// src/App.jsx
+import React, { useState } from "react";
+import "./styles/global.css";
+import { PlayerProvider, usePlayerState } from "./store/PlayerContext";
+import Sidebar from "./components/Sidebar";
+import TopBar from "./components/TopBar";
+import NowPlaying from "./screens/NowPlaying";
+import Library from "./screens/Library";
+import AlbumDetail from "./screens/AlbumDetail";
+import EqScreen from "./screens/EqScreen";
+import Studio from "./screens/Studio";
+import PlaylistDetail from "./screens/PlaylistDetail";
+import Karaoke from "./screens/Karaoke";
+import Settings from "./screens/Settings";
+
+function Shell() {
+  const { theme, accentColor } = usePlayerState();
+  const [screen, setScreen] = useState("library");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeAlbum, setActiveAlbum] = useState(null);
+  const [activePlaylist, setActivePlaylist] = useState(null);
+
+  function openAlbum(album) {
+    setActiveAlbum(album);
+    setScreen("album");
+  }
+
+  function openPlaylist(playlist) {
+    setActivePlaylist(playlist);
+    setScreen("playlist");
+  }
+
+  return (
+    <div className="upod-root" data-theme={theme} style={{ "--accent": accentColor }}>
+      <div className="shell">
+        <Sidebar
+          screen={screen}
+          setScreen={setScreen}
+          open={sidebarOpen}
+          setOpen={setSidebarOpen}
+          onOpenPlaylist={openPlaylist}
+        />
+        <div className="main">
+          <TopBar onMenu={() => setSidebarOpen(true)} screen={screen} />
+          <div className="content">
+            {screen === "nowplaying" && (
+              <NowPlaying
+                onOpenAlbum={() => activeAlbum && openAlbum(activeAlbum)}
+                onOpenEq={() => setScreen("eq")}
+                onOpenKaraoke={() => setScreen("karaoke")}
+              />
+            )}
+            {screen === "library" && (
+              <Library onOpenAlbum={openAlbum} onOpenPlaylist={openPlaylist} />
+            )}
+            {screen === "album" && activeAlbum && (
+              <AlbumDetail album={activeAlbum} onBack={() => setScreen("library")} />
+            )}
+            {screen === "eq" && <EqScreen />}
+            {screen === "studio" && <Studio onOpenPlaylist={openPlaylist} />}
+            {screen === "playlist" && activePlaylist && (
+              <PlaylistDetail playlist={activePlaylist} onBack={() => setScreen("studio")} />
+            )}
+            {screen === "karaoke" && <Karaoke />}
+            {screen === "settings" && <Settings />}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <PlayerProvider>
+      <Shell />
+    </PlayerProvider>
+  );
+}
+
+=== src/utils/accentColor.js ===
+// src/utils/accentColor.js
+// Extracts a pleasant accent color from cover art via canvas pixel sampling.
+// No new dependencies — plain 2D canvas + getImageData.
+//
+// Approach: downscale the image to a small canvas (cheap to sample), walk
+// every pixel, convert to HSL, and throw out pixels that would make an ugly
+// accent — near-black, near-white, and near-gray (low saturation, since
+// averaging grayscale pixels just produces mud). Among what's left, take a
+// saturation-weighted circular mean of hue (circular because hue wraps at
+// 360°, a plain average of e.g. 10° and 350° would wrongly give 180°), then
+// clamp the final saturation/lightness into a range that looks good as a UI
+// accent (not neon, not washed out) rather than reproducing the image's
+// exact — possibly extreme — statistics.
+
+const FALLBACK_ACCENT = "#8B7CFF";
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    switch (max) {
+      case r: h = 60 * (((g - b) / d) % 6); break;
+      case g: h = 60 * ((b - r) / d + 2); break;
+      case b: h = 60 * ((r - g) / d + 4); break;
+    }
+  }
+  if (h < 0) h += 360;
+  return [h, s, l];
+}
+
+function hslToHex(h, s, l) {
+  s = Math.max(0, Math.min(1, s));
+  l = Math.max(0, Math.min(1, l));
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const toHex = (v) =>
+    Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * Returns a hex accent color extracted from a cover-art data URL, or the
+ * app's default accent if extraction fails or the art has nothing usable
+ * (e.g. a solid near-black or near-white cover).
+ */
+export async function extractAccentColor(coverDataUrl) {
+  if (!coverDataUrl) return FALLBACK_ACCENT;
+
+  try {
+    const img = await loadImage(coverDataUrl);
+    const SIZE = 32; // small on purpose — this only needs to be roughly right
+    const canvas = document.createElement("canvas");
+    canvas.width = SIZE;
+    canvas.height = SIZE;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, SIZE, SIZE);
+    const { data } = ctx.getImageData(0, 0, SIZE, SIZE);
+
+    let sumSin = 0, sumCos = 0, sumSat = 0, sumLight = 0, weight = 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+      if (a < 200) continue; // skip transparent pixels
+
+      const [h, s, l] = rgbToHsl(r, g, b);
+
+      // Skip pixels that would drag the result toward black/white/gray —
+      // these carry little "color identity" and averaging them in just
+      // produces a muddy, unpleasant accent.
+      if (l < 0.10 || l > 0.90) continue;
+      if (s < 0.15) continue;
+
+      const w = s; // weight by saturation: vivid pixels count more
+      const rad = (h * Math.PI) / 180;
+      sumSin += Math.sin(rad) * w;
+      sumCos += Math.cos(rad) * w;
+      sumSat += s * w;
+      sumLight += l * w;
+      weight += w;
+    }
+
+    if (weight === 0) return FALLBACK_ACCENT;
+
+    let hue = (Math.atan2(sumSin, sumCos) * 180) / Math.PI;
+    if (hue < 0) hue += 360;
+    const avgSat = sumSat / weight;
+    const avgLight = sumLight / weight;
+
+    // Clamp into a range that reliably looks good as a UI accent against
+    // both the Glass and Obsidian themes, rather than trusting whatever
+    // the image's raw statistics happened to be.
+    const finalSat = Math.max(0.45, Math.min(0.75, avgSat));
+    const finalLight = Math.max(0.42, Math.min(0.62, avgLight));
+
+    return hslToHex(hue, finalSat, finalLight);
+  } catch {
+    return FALLBACK_ACCENT;
+  }
+}
+
+export { FALLBACK_ACCENT };
+
+=== src/index.css ===
+:root {
+  --text: #6b6375;
+  --text-h: #08060d;
+  --bg: #fff;
+  --border: #e5e4e7;
+  --code-bg: #f4f3ec;
+  --accent: #aa3bff;
+  --accent-bg: rgba(170, 59, 255, 0.1);
+  --accent-border: rgba(170, 59, 255, 0.5);
+  --social-bg: rgba(244, 243, 236, 0.5);
+  --shadow:
+    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  font: 18px/145% var(--sans);
+  letter-spacing: 0.18px;
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  @media (max-width: 1024px) {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #9ca3af;
+    --text-h: #f3f4f6;
+    --bg: #16171d;
+    --border: #2e303a;
+    --code-bg: #1f2028;
+    --accent: #c084fc;
+    --accent-bg: rgba(192, 132, 252, 0.15);
+    --accent-border: rgba(192, 132, 252, 0.5);
+    --social-bg: rgba(47, 48, 58, 0.5);
+    --shadow:
+      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+  }
+
+  #social .button-icon {
+    filter: invert(1) brightness(2);
+  }
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  width: 1126px;
+  max-width: 100%;
+  margin: 0 auto;
+  text-align: center;
+  border-inline: 1px solid var(--border);
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+h1,
+h2 {
+  font-family: var(--heading);
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+h1 {
+  font-size: 56px;
+  letter-spacing: -1.68px;
+  margin: 32px 0;
+  @media (max-width: 1024px) {
+    font-size: 36px;
+    margin: 20px 0;
+  }
+}
+h2 {
+  font-size: 24px;
+  line-height: 118%;
+  letter-spacing: -0.24px;
+  margin: 0 0 8px;
+  @media (max-width: 1024px) {
+    font-size: 20px;
+  }
+}
+p {
+  margin: 0;
+}
+
+code,
+.counter {
+  font-family: var(--mono);
+  display: inline-flex;
+  border-radius: 4px;
+  color: var(--text-h);
+}
+
+code {
+  font-size: 15px;
+  line-height: 135%;
+  padding: 4px 8px;
+  background: var(--code-bg);
+}
+
+=== src/store/PlayerContext.jsx ===
+// src/store/PlayerContext.jsx
+// Central player state + real HTML5 Audio playback engine (Phase 1: no EQ/effects yet).
+import React, { createContext, useContext, useEffect, useReducer, useRef, useCallback } from "react";
+import { parseLibrary, groupIntoAlbums, normalizeKey } from "../audio/metadata";
+import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
+import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffects";
+import { audioBufferToWavBlob } from "../audio/wav";
+import { audioBufferToMp3Blob } from "../audio/mp3";
+import { fetchCanonicalTrackOrder, matchTracksToOrder } from "../online/trackOrder";
+import { extractAccentColor, FALLBACK_ACCENT } from "../utils/accentColor";
+
+const PlayerStateContext = createContext(null);
+const PlayerActionsContext = createContext(null);
+
+const initialState = {
+  library: [],
+  albums: [],
+  queue: [],
+  queueIndex: 0,
+  playing: false,
+  currentTime: 0,
+  duration: 0,
+  shuffle: false,
+  repeatMode: "off", // 'off' | 'all' | 'one'
+  theme: "glass",
+  buttonPack: "modern",
+  accentColor: FALLBACK_ACCENT,
+  selectedFolderName: null,
+  loadingLibrary: false,
+  eqBands: EQ_FREQUENCIES.map(() => 0),
+  eqPreset: "Flat",
+  playlists: [], // [{ id, name, effectId, trackIds: [] }]
+  studioStatus: null, // null | "Decoding source file…" | "Rendering effect…" | { error }
+  trackOrderStatus: null, // null | "Looking up track order…" | { error } | { done: true, matched: n }
+};
+
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function reducer(state, action) {
+  switch (action.type) {
+    case "LOADING_LIBRARY":
+      return { ...state, loadingLibrary: true };
+    case "LOAD_LIBRARY": {
+      const albums = groupIntoAlbums(action.tracks);
+      return {
+        ...state,
+        library: action.tracks,
+        albums,
+        loadingLibrary: false,
+        selectedFolderName: action.folderName || state.selectedFolderName,
+      };
+    }
+    case "SET_QUEUE":
+      return { ...state, queue: action.queue, queueIndex: action.index ?? 0, playing: true, currentTime: 0 };
+    case "SET_INDEX":
+      return { ...state, queueIndex: action.index, playing: true, currentTime: 0 };
+    case "TOGGLE_PLAY":
+      return { ...state, playing: !state.playing };
+    case "SET_PLAYING":
+      return { ...state, playing: action.playing };
+    case "TICK":
+      return { ...state, currentTime: action.currentTime };
+    case "SET_DURATION":
+      return { ...state, duration: action.duration };
+    case "TOGGLE_SHUFFLE": {
+      const next = !state.shuffle;
+      if (state.queue.length === 0) return { ...state, shuffle: next };
+      const current = state.queue[state.queueIndex];
+      if (next) {
+        const rest = state.queue.filter((_, i) => i !== state.queueIndex);
+        return { ...state, shuffle: true, queue: [current, ...shuffleArray(rest)], queueIndex: 0 };
+      } else {
+        const album = state.albums.find((al) => al.tracks.some((t) => t.id === current.id));
+        const ordered = album ? album.tracks : state.queue;
+        const idx = ordered.findIndex((t) => t.id === current.id);
+        return { ...state, shuffle: false, queue: ordered, queueIndex: idx === -1 ? 0 : idx };
+      }
+    }
+    case "CYCLE_REPEAT": {
+      const next = state.repeatMode === "off" ? "all" : state.repeatMode === "all" ? "one" : "off";
+      return { ...state, repeatMode: next };
+    }
+    case "MOVE_QUEUE_ITEM": {
+      const { from, to } = action;
+      if (to < 0 || to >= state.queue.length) return state;
+      const q = [...state.queue];
+      [q[from], q[to]] = [q[to], q[from]];
+      let newIndex = state.queueIndex;
+      if (from === state.queueIndex) newIndex = to;
+      else if (to === state.queueIndex) newIndex = from;
+      return { ...state, queue: q, queueIndex: newIndex };
+    }
+    case "REMOVE_QUEUE_ITEM": {
+      if (action.index === state.queueIndex) return state;
+      const q = state.queue.filter((_, i) => i !== action.index);
+      const newIndex = action.index < state.queueIndex ? state.queueIndex - 1 : state.queueIndex;
+      return { ...state, queue: q, queueIndex: newIndex };
+    }
+    case "SET_EQ_BAND": {
+      const bands = [...state.eqBands];
+      bands[action.index] = action.value;
+      return { ...state, eqBands: bands, eqPreset: "Custom" };
+    }
+    case "SET_EQ_PRESET":
+      return { ...state, eqBands: [...action.bands], eqPreset: action.name };
+    case "SET_STUDIO_STATUS":
+      return { ...state, studioStatus: action.status };
+    case "ADD_RENDERED_TRACK": {
+      // Add the newly rendered track to the library so it's playable
+      // everywhere, and file it into the matching effect playlist
+      // (creating that playlist the first time this effect is used).
+      const { track, effectId, effectLabel } = action;
+      const library = [...state.library, track];
+      let playlists = state.playlists;
+      const existing = playlists.find((p) => p.effectId === effectId);
+      if (existing) {
+        playlists = playlists.map((p) =>
+          p.id === existing.id ? { ...p, trackIds: [...p.trackIds, track.id] } : p
+        );
+      } else {
+        playlists = [
+          ...playlists,
+          { id: `pl-${effectId}`, name: effectLabel, effectId, trackIds: [track.id] },
+        ];
+      }
+      return { ...state, library, playlists, studioStatus: null };
+    }
+    case "RENAME_PLAYLIST":
+      return {
+        ...state,
+        playlists: state.playlists.map((p) => (p.id === action.id ? { ...p, name: action.name } : p)),
+      };
+    case "SET_TRACK_ORDER_STATUS":
+      return { ...state, trackOrderStatus: action.status };
+    case "APPLY_TRACK_ORDER": {
+      const library = state.library.map((t) => {
+        if (action.updates[t.id] !== undefined) {
+          return { ...t, track: action.updates[t.id], trackConfirmed: true };
+        }
+        if (action.albumTrackIds?.includes(t.id)) {
+          // This track belongs to the album we just looked up, but didn't
+          // confidently match anything — don't let its old (possibly
+          // duplicate/wrong) number keep pretending to be reliable.
+          return { ...t, trackConfirmed: false };
+        }
+        return t;
+      });
+      return { ...state, library, albums: groupIntoAlbums(library), trackOrderStatus: null };
+    }
+    case "SET_THEME":
+      return { ...state, theme: action.theme };
+    case "SET_BUTTON_PACK":
+      return { ...state, buttonPack: action.pack };
+    case "SET_ACCENT_COLOR":
+      return { ...state, accentColor: action.color };
+    case "UPDATE_TRACK_METADATA": {
+      const { trackId, updates } = action;
+      const library = state.library.map((t) => {
+        if (t.id !== trackId) return t;
+        const next = { ...t, ...updates };
+        if (updates.album !== undefined) {
+          // Editing the album name changes which album this track belongs
+          // to — recompute the same key groupIntoAlbums uses, otherwise it
+          // falls back to the stale one still sitting on the track and the
+          // edit silently fails to regroup.
+          next.hasAlbumTag = true;
+          next.albumKey = normalizeKey(updates.album);
+        }
+        if (updates.track !== undefined) {
+          // A manual edit is as authoritative as an online-confirmed fix —
+          // don't let the "did this collide with another track" heuristic
+          // second-guess it later.
+          next.trackConfirmed = true;
+        }
+        return next;
+      });
+      return { ...state, library, albums: groupIntoAlbums(library) };
+    }
+    default:
+      return state;
+  }
+}
+
+export function PlayerProvider({ children }) {
+  const [state, dispatch] = useReducer(reducer, initialState);
+  const audioRef = useRef(null);
+  const objectUrlRef = useRef(null);
+  const engineRef = useRef(null);
+  // trackId -> hex color. Sampling is cheap but not free, and revisiting a
+  // track (skip back, replay an album) should never re-run canvas work.
+  const accentCacheRef = useRef(new Map());
+
+  if (!audioRef.current && typeof Audio !== "undefined") {
+    audioRef.current = new Audio();
+    audioRef.current.crossOrigin = "anonymous";
+  }
+
+  // The Web Audio graph can only be built after a user gesture (autoplay
+  // policy), and createMediaElementSource can only run once per <audio>
+  // element — so we create it lazily, exactly once, on first play.
+  const ensureEngine = useCallback(() => {
+    if (!engineRef.current && audioRef.current) {
+      engineRef.current = new AudioEngine(audioRef.current);
+      engineRef.current.setAllBands(state.eqBands);
+    }
+    if (engineRef.current) engineRef.current.resume();
+    return engineRef.current;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Load a new source whenever the current queue track changes.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const track = state.queue[state.queueIndex];
+    if (!track) return;
+
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+    const url = URL.createObjectURL(track.file);
+    objectUrlRef.current = url;
+    audio.src = url;
+    if (state.playing) {
+      ensureEngine();
+      audio.play().catch(() => {});
+    }
+  }, [state.queueIndex, state.queue]);
+
+  // Keep native play/pause in sync with state.playing.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (state.playing) {
+      ensureEngine();
+      audio.play().catch(() => {});
+    } else {
+      audio.pause();
+    }
+  }, [state.playing]);
+
+  // Wire native audio events to our state.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onTime = () => dispatch({ type: "TICK", currentTime: audio.currentTime });
+    const onLoaded = () => dispatch({ type: "SET_DURATION", duration: audio.duration || 0 });
+    const onEnded = () => actions.next();
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("ended", onEnded);
+    return () => {
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("ended", onEnded);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.repeatMode, state.queueIndex, state.queue.length]);
+
+  // Recompute the accent color whenever the current track actually changes
+  // (not on every queue mutation — reordering or removing other queue items
+  // shouldn't retrigger this). Cache hits resolve instantly with no canvas
+  // work at all.
+  const currentTrackId = state.queue[state.queueIndex]?.id;
+  useEffect(() => {
+    const track = state.queue[state.queueIndex];
+    if (!track) {
+      dispatch({ type: "SET_ACCENT_COLOR", color: FALLBACK_ACCENT });
+      return;
+    }
+    const cached = accentCacheRef.current.get(track.id);
+    if (cached) {
+      dispatch({ type: "SET_ACCENT_COLOR", color: cached });
+      return;
+    }
+    let cancelled = false;
+    extractAccentColor(track.cover).then((color) => {
+      accentCacheRef.current.set(track.id, color);
+      if (!cancelled) dispatch({ type: "SET_ACCENT_COLOR", color });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTrackId]);
+
+  const pickFolder = useCallback(async (fileList) => {
+    dispatch({ type: "LOADING_LIBRARY" });
+    const tracks = await parseLibrary(fileList);
+    const folderName = fileList[0]?.webkitRelativePath?.split("/")[0] || "Music Downloads";
+    dispatch({ type: "LOAD_LIBRARY", tracks, folderName });
+  }, []);
+
+  const playAlbumFromTrack = useCallback(
+    (album, track) => {
+      const startIdx = album.tracks.findIndex((t) => t.id === track.id);
+      if (state.shuffle) {
+        const rest = album.tracks.filter((t) => t.id !== track.id);
+        dispatch({ type: "SET_QUEUE", queue: [track, ...shuffleArray(rest)], index: 0 });
+      } else {
+        dispatch({ type: "SET_QUEUE", queue: album.tracks, index: startIdx === -1 ? 0 : startIdx });
+      }
+    },
+    [state.shuffle]
+  );
+
+  const playPlaylist = useCallback(
+    (playlist, track) => {
+      const tracks = playlist.trackIds
+        .map((id) => state.library.find((t) => t.id === id))
+        .filter(Boolean);
+      const startTrack = track || tracks[0];
+      if (!startTrack) return;
+      const startIdx = tracks.findIndex((t) => t.id === startTrack.id);
+      if (state.shuffle) {
+        const rest = tracks.filter((t) => t.id !== startTrack.id);
+        dispatch({ type: "SET_QUEUE", queue: [startTrack, ...shuffleArray(rest)], index: 0 });
+      } else {
+        dispatch({ type: "SET_QUEUE", queue: tracks, index: startIdx === -1 ? 0 : startIdx });
+      }
+    },
+    [state.shuffle, state.library]
+  );
+
+  const actions = {
+    pickFolder,
+    playAlbumFromTrack,
+    playPlaylist,
+    togglePlay: () => dispatch({ type: "TOGGLE_PLAY" }),
+    seek: (time) => {
+      if (audioRef.current) audioRef.current.currentTime = time;
+      dispatch({ type: "TICK", currentTime: time });
+    },
+    next: () => {
+      const { queue, queueIndex, repeatMode } = state;
+      if (queue.length === 0) return;
+      if (repeatMode === "one") {
+        if (audioRef.current) audioRef.current.currentTime = 0;
+        dispatch({ type: "SET_PLAYING", playing: true });
+        return;
+      }
+      let nextIndex = queueIndex + 1;
+      if (nextIndex >= queue.length) {
+        if (repeatMode === "all") nextIndex = 0;
+        else { dispatch({ type: "SET_PLAYING", playing: false }); return; }
+      }
+      dispatch({ type: "SET_INDEX", index: nextIndex });
+    },
+    previous: () => {
+      const { queue, queueIndex, repeatMode } = state;
+      if (queue.length === 0) return;
+      let prevIndex = queueIndex - 1;
+      if (prevIndex < 0) prevIndex = repeatMode === "all" ? queue.length - 1 : 0;
+      dispatch({ type: "SET_INDEX", index: prevIndex });
+    },
+    toggleShuffle: () => dispatch({ type: "TOGGLE_SHUFFLE" }),
+    cycleRepeat: () => dispatch({ type: "CYCLE_REPEAT" }),
+    moveQueueItem: (from, to) => dispatch({ type: "MOVE_QUEUE_ITEM", from, to }),
+    removeQueueItem: (index) => dispatch({ type: "REMOVE_QUEUE_ITEM", index }),
+    jumpToQueueIndex: (index) => dispatch({ type: "SET_INDEX", index }),
+    setTheme: (theme) => dispatch({ type: "SET_THEME", theme }),
+    setButtonPack: (pack) => dispatch({ type: "SET_BUTTON_PACK", pack }),
+    updateTrackMetadata: (trackId, updates) =>
+      dispatch({ type: "UPDATE_TRACK_METADATA", trackId, updates }),
+    setEqBand: (index, value) => {
+      if (engineRef.current) engineRef.current.setBandGain(index, value);
+      dispatch({ type: "SET_EQ_BAND", index, value });
+    },
+    setEqPreset: (name) => {
+      const bands = EQ_PRESETS[name] || EQ_PRESETS.Flat;
+      if (engineRef.current) engineRef.current.setAllBands(bands);
+      dispatch({ type: "SET_EQ_PRESET", name, bands });
+    },
+    renamePlaylist: (id, name) => dispatch({ type: "RENAME_PLAYLIST", id, name }),
+    fixAlbumTrackOrder: async (album) => {
+      dispatch({ type: "SET_TRACK_ORDER_STATUS", status: "Looking up track order…" });
+      const result = await fetchCanonicalTrackOrder(album.title, album.artist);
+      if (!result.ok) {
+        dispatch({
+          type: "SET_TRACK_ORDER_STATUS",
+          status: {
+            error: result.offline
+              ? "You're offline — connect to fix track order."
+              : result.notFound
+              ? "Couldn't find this album on MusicBrainz."
+              : "Lookup failed — try again later.",
+          },
+        });
+        return { ok: false };
+      }
+      const updates = matchTracksToOrder(album.tracks, result.order);
+      const matchedCount = Object.keys(updates).length;
+      if (matchedCount === 0) {
+        dispatch({ type: "SET_TRACK_ORDER_STATUS", status: { error: "Found the album, but couldn't confidently match any track titles." } });
+        return { ok: false };
+      }
+      dispatch({ type: "APPLY_TRACK_ORDER", updates, albumTrackIds: album.tracks.map((t) => t.id) });
+      return { ok: true, matched: matchedCount, total: album.tracks.length };
+    },
+    renderStudioEffect: async (sourceTrack, effectId, format = "mp3") => {
+      try {
+        dispatch({ type: "SET_STUDIO_STATUS", status: "Decoding source file…" });
+        const { audioBuffer, suggestedFileName, effectDef } = await renderEffectOffline(
+          sourceTrack,
+          effectId,
+          (status) => dispatch({ type: "SET_STUDIO_STATUS", status })
+        );
+
+        dispatch({ type: "SET_STUDIO_STATUS", status: `Encoding ${format.toUpperCase()}…` });
+        const meta = {
+          title: `${sourceTrack.title} (${effectDef.label})`,
+          artist: sourceTrack.artist,
+          album: effectDef.label,
+          track: sourceTrack.track,
+        };
+        const blob =
+          format === "wav"
+            ? audioBufferToWavBlob(audioBuffer, meta)
+            : await audioBufferToMp3Blob(audioBuffer, meta);
+
+        const fileName = suggestedFileName.replace(/\.wav$/, format === "wav" ? ".wav" : ".mp3");
+        // Blob is a drop-in for File everywhere our pipeline reads track.file
+        // (URL.createObjectURL and .arrayBuffer() both work on Blob).
+        const renderedFile = blob;
+        renderedFile.name = fileName;
+
+        const track = {
+          id: `studio-${effectId}-${sourceTrack.id}-${Date.now()}`,
+          file: renderedFile,
+          title: meta.title,
+          artist: meta.artist,
+          album: effectDef.label,
+          track: sourceTrack.track || 0,
+          year: sourceTrack.year,
+          cover: sourceTrack.cover,
+          isStudioRender: true,
+          sourceTrackId: sourceTrack.id,
+        };
+
+        dispatch({ type: "ADD_RENDERED_TRACK", track, effectId, effectLabel: effectDef.label });
+        return { ok: true, track };
+      } catch (err) {
+        dispatch({ type: "SET_STUDIO_STATUS", status: { error: err.message || "Render failed" } });
+        return { ok: false, error: err };
+      }
+    },
+  };
+
+  return (
+    <PlayerStateContext.Provider value={state}>
+      <PlayerActionsContext.Provider value={actions}>{children}</PlayerActionsContext.Provider>
+    </PlayerStateContext.Provider>
+  );
+}
+
+export function usePlayerState() {
+  return useContext(PlayerStateContext);
+}
+export function usePlayerActions() {
+  return useContext(PlayerActionsContext);
+}

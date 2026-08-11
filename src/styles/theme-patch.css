@@ -1,0 +1,53 @@
+/* ============================================================
+   THEME PATCH — replace the existing `:root { ... }` block in
+   global.css with this, and add the `[data-theme="obsidian"]`
+   block right after it. Nothing else in global.css needs to change
+   — every rule already reads these same variable names.
+
+   Wiring: set `data-theme` on the `.upod-root` element from state.theme:
+     <div className="upod-root" data-theme={state.theme}>
+   theme is 'glass' (default, uses :root) or 'obsidian' (override below).
+   ============================================================ */
+
+:root {
+  /* Liquid Glass — brighter, more layered, more specular light */
+  --bg: #E7EAF5;
+  --bg-img:
+    radial-gradient(circle at 12% -5%, rgba(255,255,255,0.95), transparent 42%),
+    radial-gradient(circle at 88% 105%, rgba(200,210,255,0.75), transparent 52%),
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,0.25), transparent 70%);
+  --panel: rgba(255,255,255,0.46);
+  --panel-strong: rgba(255,255,255,0.68);
+  --border: rgba(255,255,255,0.8);
+  --text: #1B1D2A;
+  --text-dim: rgba(27,29,42,0.55);
+  --blur: 28px;
+  --sidebar: rgba(255,255,255,0.4);
+  --shadow: 0 10px 36px rgba(60,50,120,0.18), inset 0 1px 0 rgba(255,255,255,0.5);
+  --specular: linear-gradient(120deg, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.18) 28%, rgba(255,255,255,0) 55%);
+  --glass-border-top: 1px solid rgba(255,255,255,0.92);
+}
+
+.upod-root[data-theme="obsidian"] {
+  /* Matte Obsidian — near-black, low-sheen, cool undertone, no glass glow */
+  --bg: #0A0A0C;
+  --bg-img:
+    radial-gradient(circle at 15% 0%, rgba(255,255,255,0.04), transparent 45%),
+    radial-gradient(circle at 85% 100%, rgba(255,255,255,0.03), transparent 55%);
+  --panel: rgba(255,255,255,0.055);
+  --panel-strong: rgba(255,255,255,0.09);
+  --border: rgba(255,255,255,0.1);
+  --text: #F2F2F5;
+  --text-dim: rgba(242,242,245,0.5);
+  --blur: 18px;
+  --sidebar: rgba(255,255,255,0.04);
+  --shadow: 0 10px 30px rgba(0,0,0,0.5);
+  --specular: linear-gradient(120deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.015) 30%, rgba(255,255,255,0) 55%);
+  --glass-border-top: 1px solid rgba(255,255,255,0.12);
+}
+
+/* Obsidian gets its own transition curve so switching themes feels
+   deliberate rather than jarring — slightly slower, no bounce. */
+.upod-root {
+  transition: background 0.4s ease, color 0.3s ease;
+}
