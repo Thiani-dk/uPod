@@ -1,8 +1,9 @@
 // src/screens/Library.jsx
 import React, { useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Search, X, FolderOpen, Wand2, MoreVertical, Bookmark, FolderPlus } from "lucide-react";
+import { Search, X, FolderOpen, Wand2, MoreVertical, Bookmark, FolderPlus, User } from "lucide-react";
 import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
+import { useUnifiedSearch } from "../utils/search";
 import NoteMark from "../components/NoteMark";
 import PlayNow from "./PlayNow";
 import TrackActionsMenu from "../components/TrackActionsMenu";
@@ -11,6 +12,7 @@ import MetadataEditModal from "../components/MetadataEditModal";
 
 const TABS = [
   { id: "playnow", label: "Play Now" },
+  { id: "search", label: "Search" },
   { id: "albums", label: "Albums" },
   { id: "playlists", label: "Playlists" },
   { id: "songs", label: "Tracks" },
@@ -21,10 +23,17 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   const { pickFolder, pickNativeFolder, playAlbumFromTrack, addTrackToPlaylist, removeTrackFromPlaylist } = usePlayerActions();
   const [tab, setTab] = useState("playnow");
   const [query, setQuery] = useState("");
+  // Deliberately separate from `query` above — that one drives each tab's
+  // own siloed filter (Albums search only matches albums, etc). This one
+  // powers the dedicated Search tab, which spans the whole library at once
+  // regardless of tab (see src/utils/search.js).
+  const [searchQuery, setSearchQuery] = useState("");
   const [menuTrack, setMenuTrack] = useState(null);
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
   const [editTrack, setEditTrack] = useState(null);
   const inputRef = useRef(null);
+
+  const searchResults = useUnifiedSearch(searchQuery);
 
   const q = query.trim().toLowerCase();
 
@@ -87,7 +96,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         onChange={handleFiles}
       />
 
-      {tab !== "playnow" && (
+      {tab !== "playnow" && tab !== "search" && (
         <div className="search-bar">
           <Search size={16} />
           <input
@@ -97,6 +106,23 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
           />
           {query && (
             <button className="icon-btn small" onClick={() => setQuery("")}>
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {tab === "search" && (
+        <div className="search-bar">
+          <Search size={16} />
+          <input
+            placeholder="Search your whole library…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            autoFocus
+          />
+          {searchQuery && (
+            <button className="icon-btn small" onClick={() => setSearchQuery("")}>
               <X size={14} />
             </button>
           )}
@@ -151,7 +177,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         </div>
       )}
 
-      {selectedFolderName && albums.length > 0 && tab !== "playnow" && (
+      {selectedFolderName && albums.length > 0 && tab !== "playnow" && tab !== "search" && (
         <div className="folder-chip" style={{ marginBottom: 14 }}>
           <FolderOpen size={14} />
           <span>{selectedFolderName}</span>
@@ -160,6 +186,124 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
 
       {albums.length > 0 && tab === "playnow" && (
         <PlayNow onOpenAlbum={onOpenAlbum} onOpenPlaylist={onOpenPlaylist} onOpenInstantMix={onOpenInstantMix} />
+      )}
+
+      {albums.length > 0 && tab === "search" && (
+        <div className="search-results">
+          {!searchQuery.trim() && (
+            <div className="empty-state">Search across every track, album, playlist, and artist.</div>
+          )}
+
+          {searchQuery.trim() &&
+            searchResults.tracks.length === 0 &&
+            searchResults.albums.length === 0 &&
+            searchResults.playlists.length === 0 &&
+            searchResults.artists.length === 0 && (
+              <div className="empty-state">No results for "{searchQuery.trim()}".</div>
+            )}
+
+          {searchResults.artists.length > 0 && (
+            <>
+              <div className="settings-group-title">Artists</div>
+              <div className="instant-mix-chip-row" style={{ marginBottom: 20 }}>
+                {searchResults.artists.map((name) => (
+                  <button key={name} className="chip" onClick={() => filterByArtist(name)}>
+                    <User size={11} style={{ marginRight: 4 }} />
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {searchResults.albums.length > 0 && (
+            <>
+              <div className="settings-group-title">Albums</div>
+              <div className="album-grid" style={{ marginBottom: 20 }}>
+                {searchResults.albums.map((al) => (
+                  <button key={al.id} className="album-card" onClick={() => onOpenAlbum(al)}>
+                    <div
+                      className={`album-cover ${al.cover ? "" : "cover-glass"}`}
+                      style={al.cover ? { background: `url(${al.cover}) center/cover` } : undefined}
+                    >
+                      {!al.cover && <NoteMark size={40} style={{ color: "var(--accent)" }} />}
+                    </div>
+                    <div className="album-card-title">{al.title}</div>
+                    <div className="album-card-artist">{al.artist}{al.year ? ` · ${al.year}` : ""}</div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {searchResults.playlists.length > 0 && (
+            <>
+              <div className="settings-group-title">Playlists</div>
+              <div className="playlist-list" style={{ marginBottom: 20 }}>
+                {searchResults.playlists.map((p) => (
+                  <button key={p.id} className="playlist-row" onClick={() => onOpenPlaylist(p)}>
+                    <div className="playlist-thumb" style={{ background: "var(--accent)" }}>
+                      <Wand2 size={16} color="#fff" />
+                    </div>
+                    <div className="playlist-row-meta">
+                      <div className="playlist-row-name">{p.name}</div>
+                      <div className="playlist-row-count">{p.trackIds.length} tracks</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {searchResults.tracks.length > 0 && (
+            <>
+              <div className="settings-group-title">Tracks</div>
+              <div className="track-list">
+                {searchResults.tracks.map((t) => {
+                  const isFavorite = favPlaylist?.trackIds.includes(t.id);
+                  return (
+                    <div key={t.id} className="track-row-wrap track-row-thumb-wrap">
+                      <button className="track-row-play track-row-with-thumb" onClick={() => playSong(t)}>
+                        <div className={`track-row-thumb ${t.cover ? "" : "cover-glass"}`} style={t.cover ? { background: `url(${t.cover}) center/cover` } : undefined}>
+                          {!t.cover && <NoteMark size={18} style={{ color: "var(--accent)" }} />}
+                        </div>
+                        <span className="track-row-text">
+                          <span className="track-row-text-title">{t.title}</span>
+                          <span className="track-row-text-artist">{t.artist} · {t.album}</span>
+                        </span>
+                      </button>
+                      <button
+                        className="icon-btn small track-edit-btn"
+                        onClick={(e) => { e.stopPropagation(); toggleFavorite(t); }}
+                        aria-label={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+                        title={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+                        style={isFavorite ? { color: "var(--accent)" } : undefined}
+                      >
+                        <Bookmark size={15} fill={isFavorite ? "currentColor" : "none"} />
+                      </button>
+                      <button
+                        className="icon-btn small track-edit-btn"
+                        onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
+                        aria-label="Add to playlist"
+                        title="Add to playlist"
+                      >
+                        <FolderPlus size={15} />
+                      </button>
+                      <button
+                        className="icon-btn small track-edit-btn"
+                        onClick={(e) => { e.stopPropagation(); setMenuTrack(t); }}
+                        aria-label="Track actions"
+                        title="Track actions"
+                      >
+                        <MoreVertical size={15} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
       )}
 
       {albums.length > 0 && tab === "albums" && (
