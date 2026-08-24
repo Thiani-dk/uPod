@@ -10,12 +10,14 @@ import {
   Music,
   Maximize2,
   Minimize2,
+  Moon,
 } from "lucide-react";
 import { usePlayerState, usePlayerTime, usePlayerActions, FAVORITES_PLAYLIST_ID, SPEED_STEPS } from "../store/PlayerContext";
 import TransportButtons from "../components/TransportButtons";
 import QueueModal from "../components/QueueModal";
 import NoteMark from "../components/NoteMark";
 import AddToPlaylistModal from "../components/AddToPlaylistModal";
+import SleepTimerModal from "../components/SleepTimerModal";
 
 function formatDur(seconds) {
   if (!seconds || !Number.isFinite(seconds)) return "0:00";
@@ -41,13 +43,14 @@ function SpeedStepper({ rate, onChange, light }) {
 }
 
 export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
-  const { queue, queueIndex, playlists, queueToast, playbackRate } = usePlayerState();
+  const { queue, queueIndex, playlists, queueToast, playbackRate, sleepTimerEndsAt } = usePlayerState();
   const { currentTime, duration } = usePlayerTime();
   const { seek, setPlaybackRate } = usePlayerActions();
   const [queueOpen, setQueueOpen] = useState(false);
   const [immersive, setImmersive] = useState(false);
   const [immersiveTransitioning, setImmersiveTransitioning] = useState(false);
   const [addToPlaylistOpen, setAddToPlaylistOpen] = useState(false);
+  const [sleepTimerOpen, setSleepTimerOpen] = useState(false);
   const immersiveRef = useRef(null);
   const dragRef = useRef(null);
   const track = queue[queueIndex];
@@ -141,6 +144,7 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
   }
 
   const isFavorite = playlists.find((p) => p.id === FAVORITES_PLAYLIST_ID)?.trackIds.includes(track.id);
+  const sleepMinsLeft = sleepTimerEndsAt ? Math.max(1, Math.ceil((sleepTimerEndsAt - Date.now()) / 60000)) : null;
 
   function searchArtistOnGoogle() {
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
@@ -308,12 +312,20 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
           </button>
           <button className="pill-btn" onClick={onOpenEq}><SlidersHorizontal size={15} /> EQ</button>
           <button className="pill-btn" onClick={onOpenKaraoke}><Mic2 size={15} /> Karaoke</button>
+          <button
+            className="pill-btn"
+            onClick={() => setSleepTimerOpen(true)}
+            style={sleepMinsLeft ? { color: "var(--accent)", borderColor: "var(--accent)" } : undefined}
+          >
+            <Moon size={15} /> {sleepMinsLeft ? `${sleepMinsLeft}m` : "Sleep"}
+          </button>
           <button className="pill-btn"><MoreHorizontal size={15} /></button>
         </div>
       </div>
 
       {queueOpen && <QueueModal onClose={() => setQueueOpen(false)} />}
       {addToPlaylistOpen && <AddToPlaylistModal track={track} onClose={() => setAddToPlaylistOpen(false)} />}
+      {sleepTimerOpen && <SleepTimerModal onClose={() => setSleepTimerOpen(false)} />}
     </>
   );
 }
