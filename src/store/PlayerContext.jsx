@@ -512,9 +512,17 @@ export function PlayerProvider({ children }) {
     };
   }, []);
 
+  // "none" until a track has actually been loaded — otherwise this fires
+  // on cold mount (state.playing starts false → "paused"), and "paused"
+  // counts as active playback to the plugin's native service, starting
+  // the foreground service and showing an empty notification before
+  // anything has ever played.
+  const hasCurrentTrack = Boolean(state.queue[state.queueIndex]);
   useEffect(() => {
-    MediaSession.setPlaybackState({ playbackState: state.playing ? "playing" : "paused" }).catch(() => {});
-  }, [state.playing]);
+    MediaSession.setPlaybackState({
+      playbackState: !hasCurrentTrack ? "none" : state.playing ? "playing" : "paused",
+    }).catch(() => {});
+  }, [state.playing, hasCurrentTrack]);
 
   const currentTrackId = state.queue[state.queueIndex]?.id;
   useEffect(() => {
