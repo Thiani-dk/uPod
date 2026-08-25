@@ -18,6 +18,7 @@ import { fetchCanonicalTrackOrder, matchTracksToOrder } from "../online/trackOrd
 import { extractAccentColor, FALLBACK_ACCENT } from "../utils/accentColor";
 import { recordListen } from "../utils/listeningStats";
 import { loadFont } from "../utils/fonts";
+import { MediaSession } from "@capgo/capacitor-media-session";
 
 const PlayerStateContext = createContext(null);
 const PlayerActionsContext = createContext(null);
@@ -428,19 +429,15 @@ export function PlayerProvider({ children }) {
       l.lastTime = now;
       if (l.pendingSeconds >= 10) flushListen();
       dispatch({ type: "TICK", currentTime: now });
-      if (typeof navigator !== "undefined" && "mediaSession" in navigator && audio.duration) {
-        // Powers the scrub bar on the lock screen/notification — wrapped
-        // in try/catch since it can throw on transient inconsistent
+      if (audio.duration) {
+        // Powers the scrub bar on the lock screen/notification — settled
+        // with .catch() since it can reject on transient inconsistent
         // values (e.g. position momentarily exceeding duration mid-seek).
-        try {
-          navigator.mediaSession.setPositionState({
-            duration: audio.duration,
-            playbackRate: audio.playbackRate,
-            position: audio.currentTime,
-          });
-        } catch {
-          // ignore
-        }
+        MediaSession.setPositionState({
+          duration: audio.duration,
+          playbackRate: audio.playbackRate,
+          position: audio.currentTime,
+        }).catch(() => {});
       }
     };
     const onLoaded = () => dispatch({ type: "SET_DURATION", duration: audio.duration || 0 });
@@ -486,35 +483,37 @@ export function PlayerProvider({ children }) {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
-  // Lock screen / notification media controls — the standard Web
-  // MediaSession API, not a native plugin. Android's WebView surfaces this
-  // as system media controls automatically once a page has an active
-  // MediaSession and a playing <audio> element; it's also what lets
-  // Chrome/WebView keep audio playing reliably when the app is
-  // backgrounded, since the OS treats it as an active media session
-  // rather than an ordinary suspendable background page.
+  // Lock screen / notification media controls, and hardware media buttons
+  // (wired + Bluetooth) — via @capgo/capacitor-media-session's native
+  // MediaSessionCompat + MediaButtonReceiver + foreground service. Plain
+  // android.webkit.WebView does NOT implement the native side of
+  // navigator.mediaSession on its own — no real system MediaSession, no
+  // audio focus, no hardware-key routing. That integration lives in
+  // Chrome-the-browser-app's own Java layer, not in the WebView engine
+  // third-party apps embed — confirmed the hard way: hardware buttons did
+  // nothing despite the Web MediaSession API surface (metadata,
+  // playbackState, action handlers) being fully and correctly wired. This
+  // plugin's JS API mirrors navigator.mediaSession closely and falls back
+  // to the real Web API on non-native builds.
   useEffect(() => {
-    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
-    const ms = navigator.mediaSession;
-    ms.setActionHandler("play", () => actionsRef.current.play());
-    ms.setActionHandler("pause", () => actionsRef.current.pause());
-    ms.setActionHandler("previoustrack", () => actionsRef.current.previous());
-    ms.setActionHandler("nexttrack", () => actionsRef.current.next());
-    ms.setActionHandler("seekto", (details) => {
+    MediaSession.setActionHandler({ action: "play" }, () => actionsRef.current.play()).catch(() => {});
+    MediaSession.setActionHandler({ action: "pause" }, () => actionsRef.current.pause()).catch(() => {});
+    MediaSession.setActionHandler({ action: "previoustrack" }, () => actionsRef.current.previous()).catch(() => {});
+    MediaSession.setActionHandler({ action: "nexttrack" }, () => actionsRef.current.next()).catch(() => {});
+    MediaSession.setActionHandler({ action: "seekto" }, (details) => {
       if (details.seekTime != null) actionsRef.current.seek(details.seekTime);
-    });
+    }).catch(() => {});
     return () => {
-      ms.setActionHandler("play", null);
-      ms.setActionHandler("pause", null);
-      ms.setActionHandler("previoustrack", null);
-      ms.setActionHandler("nexttrack", null);
-      ms.setActionHandler("seekto", null);
+      MediaSession.setActionHandler({ action: "play" }, null).catch(() => {});
+      MediaSession.setActionHandler({ action: "pause" }, null).catch(() => {});
+      MediaSession.setActionHandler({ action: "previoustrack" }, null).catch(() => {});
+      MediaSession.setActionHandler({ action: "nexttrack" }, null).catch(() => {});
+      MediaSession.setActionHandler({ action: "seekto" }, null).catch(() => {});
     };
   }, []);
 
   useEffect(() => {
-    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
-    navigator.mediaSession.playbackState = state.playing ? "playing" : "paused";
+    MediaSession.setPlaybackState({ playbackState: state.playing ? "playing" : "paused" }).catch(() => {});
   }, [state.playing]);
 
   const currentTrackId = state.queue[state.queueIndex]?.id;
@@ -541,18 +540,21 @@ export function PlayerProvider({ children }) {
   }, [currentTrackId]);
 
   useEffect(() => {
-    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
     const track = state.queue[state.queueIndex];
-    if (!track) {
-      navigator.mediaSession.metadata = null;
-      return;
-    }
-    navigator.mediaSession.metadata = new MediaMetadata({
+    if (!track) return;
+    MediaSession.setMetadata({
       title: track.title,
       artist: track.artist,
       album: track.album,
+      // track.cover is always a blob: object URL in this app (see
+      // coverObjectUrlFromBytes in audio/metadata.js) — the plugin's
+      // native side can only fetch http(s):/data: URLs, not blob:, so
+      // lock-screen/notification artwork won't actually render from this
+      // until covers are exposed some other way. Known limitation, not
+      // addressed here — title/artist/album and the controls themselves
+      // are unaffected.
       artwork: track.cover ? [{ src: track.cover, sizes: "512x512", type: "image/jpeg" }] : [],
-    });
+    }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrackId]);
 
