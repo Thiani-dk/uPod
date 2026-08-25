@@ -19,6 +19,7 @@ import { extractAccentColor, FALLBACK_ACCENT } from "../utils/accentColor";
 import { recordListen } from "../utils/listeningStats";
 import { loadFont } from "../utils/fonts";
 import { MediaSession } from "@capgo/capacitor-media-session";
+import { NoisyAudio } from "../utils/noisyAudio";
 
 const PlayerStateContext = createContext(null);
 const PlayerActionsContext = createContext(null);
@@ -509,6 +510,19 @@ export function PlayerProvider({ children }) {
       MediaSession.setActionHandler({ action: "previoustrack" }, null).catch(() => {});
       MediaSession.setActionHandler({ action: "nexttrack" }, null).catch(() => {});
       MediaSession.setActionHandler({ action: "seekto" }, null).catch(() => {});
+    };
+  }, []);
+
+  // Headphone-unplug auto-pause — @capgo/capacitor-media-session doesn't
+  // register for this (confirmed by reading its source) since it's
+  // unrelated to MediaSession/hardware buttons; every well-behaved media
+  // app is expected to listen for ACTION_AUDIO_BECOMING_NOISY itself. See
+  // android/app/src/main/java/com/katiso/upod/NoisyAudioPlugin.java.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const handle = NoisyAudio.addListener("noisy", () => actionsRef.current.pause());
+    return () => {
+      handle.then((h) => h.remove());
     };
   }, []);
 
