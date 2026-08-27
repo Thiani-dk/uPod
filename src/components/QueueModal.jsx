@@ -2,8 +2,10 @@ import React, { useState } from "react";
 import { X, ChevronUp, ChevronDown, Trash2, GripVertical, Shuffle, ListPlus, Check } from "lucide-react";
 import NoteMark from "./NoteMark";
 import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+import useBackButtonClose from "../utils/useBackButtonClose";
 
 export default function QueueModal({ onClose }) {
+  useBackButtonClose(onClose);
   const { queue, queueIndex } = usePlayerState();
   const { moveQueueItem, removeQueueItem, jumpToQueueIndex, reshuffleQueue, saveQueueAsPlaylist } = usePlayerActions();
   const [savingAs, setSavingAs] = useState(false);

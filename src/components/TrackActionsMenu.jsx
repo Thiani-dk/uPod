@@ -2,8 +2,10 @@
 import React from "react";
 import { X, Play, ListPlus, ListMusic, Bookmark, Disc3, User, FolderPlus, Pencil } from "lucide-react";
 import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
+import useBackButtonClose from "../utils/useBackButtonClose";
 
 export default function TrackActionsMenu({ track, onClose, onPlay, onOpenAlbum, onFilterArtist, onAddToPlaylist, onEdit }) {
+  useBackButtonClose(onClose);
   const { albums, playlists } = usePlayerState();
   const { playNext, addToQueue, addTrackToPlaylist, removeTrackFromPlaylist } = usePlayerActions();
 

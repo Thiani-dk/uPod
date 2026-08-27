@@ -1,6 +1,6 @@
 // src/screens/AlbumDetail.jsx
 import React, { useRef, useState } from "react";
-import { ChevronLeft, Play, Shuffle, Heart, Wand2, Pencil, Plus, ImagePlus, Bookmark, FolderPlus } from "lucide-react";
+import { ChevronLeft, Play, Shuffle, Heart, Wand2, Pencil, Plus, ImagePlus, RotateCcw, Bookmark, FolderPlus } from "lucide-react";
 import { usePlayerActions, usePlayerState, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
 import NoteMark from "../components/NoteMark";
 import MetadataEditModal from "../components/MetadataEditModal";
@@ -14,8 +14,8 @@ function formatDur(seconds) {
 }
 
 export default function AlbumDetail({ album: albumProp, onBack }) {
-  const { playAlbumFromTrack, fixAlbumTrackOrder, addToQueue, playTrackList, addTracksToPlaylist, removeTracksFromPlaylist, addTrackToPlaylist, removeTrackFromPlaylist, setAlbumCover } = usePlayerActions();
-  const { queue, queueIndex, albums, trackOrderStatus, playlists } = usePlayerState();
+  const { playAlbumFromTrack, fixAlbumTrackOrder, addToQueue, playTrackList, addTracksToPlaylist, removeTracksFromPlaylist, addTrackToPlaylist, removeTrackFromPlaylist, setAlbumCoverOverride, clearAlbumCoverOverride } = usePlayerActions();
+  const { queue, queueIndex, albums, trackOrderStatus, playlists, coverOverrides } = usePlayerState();
   const [lastFixResult, setLastFixResult] = useState(null);
   const [editingTrack, setEditingTrack] = useState(null);
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
@@ -56,13 +56,17 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
     window.open(`https://www.google.com/search?q=${encodeURIComponent(album.artist)}`, "_blank", "noopener");
   }
 
-  function handleCoverFile(e) {
+  const hasCoverOverride = Boolean(coverOverrides[album.id]);
+
+  // In-app only — this changes what uPod displays, not the file's actual
+  // embedded ID3 picture (same constraint as Studio renders, track-order
+  // fixes, and metadata editing elsewhere in the app).
+  async function handleCoverFile(e) {
     const file = e.target.files && e.target.files[0];
     e.target.value = "";
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setAlbumCover(album.tracks.map((t) => t.id), reader.result);
-    reader.readAsDataURL(file);
+    const buf = await file.arrayBuffer();
+    setAlbumCoverOverride(album.id, new Uint8Array(buf), file.type || "image/jpeg");
   }
 
   return (
@@ -95,6 +99,17 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
           >
             <ImagePlus size={14} />
           </button>
+          {hasCoverOverride && (
+            <button
+              className="icon-btn small"
+              onClick={() => clearAlbumCoverOverride(album.id)}
+              aria-label="Reset to original cover"
+              title="Reset to original cover"
+              style={{ position: "absolute", left: 6, bottom: 6 }}
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
         </div>
         <div className="detail-info">
           <div className="detail-kicker">Album</div>

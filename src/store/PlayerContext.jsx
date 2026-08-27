@@ -1,15 +1,23 @@
 // src/store/PlayerContext.jsx
 // Central player state + real HTML5 Audio playback engine.
 import React, { createContext, useContext, useEffect, useReducer, useRef, useCallback, useMemo } from "react";
-import { parseLibrary, groupIntoAlbums, normalizeKey } from "../audio/metadata";
+import { parseLibrary, groupIntoAlbums, normalizeKey, albumIdForTrack, coverObjectUrlFromBytes } from "../audio/metadata";
 import { Capacitor } from "@capacitor/core";
 import {
-  readNativeFolderAsFiles,
+  scanNativeFolder,
+  readNativeTrackObjectUrl,
   ensureStoragePermission,
   getMusicFolderPath,
   hasConfirmedFolderOnce,
   markFolderConfirmedOnce,
 } from "../audio/nativeFolder";
+import {
+  loadLibrary as loadCachedLibrary,
+  saveLibrary as saveCachedLibrary,
+  saveCoverOverride as persistCoverOverride,
+  clearCoverOverride as removePersistedCoverOverride,
+  loadCoverOverrides,
+} from "../audio/libraryCache";
 import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
 import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffects";
 import { audioBufferToWavBlob } from "../audio/wav";
@@ -20,6 +28,7 @@ import { recordListen } from "../utils/listeningStats";
 import { loadFont } from "../utils/fonts";
 import { MediaSession } from "@capgo/capacitor-media-session";
 import { NoisyAudio } from "../utils/noisyAudio";
+import { armBackgroundWatchdog, checkAndClearBackgroundKillMarker } from "../utils/backgroundPlaybackWatchdog";
 
 const PlayerStateContext = createContext(null);
 const PlayerActionsContext = createContext(null);
@@ -57,6 +66,11 @@ const initialState = {
   pendingFolderConfirm: null,
   eqBands: EQ_FREQUENCIES.map(() => 0),
   eqPreset: "Flat",
+  // { [albumId]: objectUrl } — user-chosen covers that override the
+  // embedded/derived one. Loaded from IndexedDB once on launch, before any
+  // LOAD_LIBRARY dispatch, so a rescan or cache hydration never has a
+  // chance to show the embedded cover before the override reasserts.
+  coverOverrides: {},
   playlists: [{ id: FAVORITES_PLAYLIST_ID, name: "Favourite Tunes", effectId: null, trackIds: [] }],
   studioStatus: null,
   trackOrderStatus: null,
@@ -69,6 +83,10 @@ const initialState = {
   // an absolute time rather than a running countdown means the timer stays
   // correct even if the tab/app was backgrounded and JS timers were throttled.
   sleepTimerEndsAt: null,
+  // Set once, on cold launch, if the previous session's playback appears
+  // to have been killed by the OS while backgrounded (see
+  // backgroundPlaybackWatchdog.js) rather than just paused.
+  backgroundKillNotice: false,
 };
 
 function shuffleArray(arr) {
@@ -80,6 +98,17 @@ function shuffleArray(arr) {
   return a;
 }
 
+// Overlays `overrides` ({ [albumId]: objectUrl }) onto `tracks`, only
+// touching tracks whose album actually has an override — cheap no-op for
+// the common case where overrides is empty or unrelated to most tracks.
+function applyCoverOverrides(tracks, overrides) {
+  if (!overrides || Object.keys(overrides).length === 0) return tracks;
+  return tracks.map((t) => {
+    const override = overrides[albumIdForTrack(t)];
+    return override && t.cover !== override ? { ...t, cover: override } : t;
+  });
+}
+
 function reducer(state, action) {
   switch (action.type) {
     case "LOADING_LIBRARY":
@@ -89,10 +118,14 @@ function reducer(state, action) {
     case "LIBRARY_SCAN_PROGRESS":
       return { ...state, libraryProgress: { done: action.done, total: action.total } };
     case "LOAD_LIBRARY": {
-      const albums = groupIntoAlbums(action.tracks);
+      // Freshly-scanned or cache-hydrated tracks always carry their
+      // embedded cover — reapply any user overrides on top so a rescan or
+      // a later launch doesn't silently drop back to the embedded art.
+      const library = applyCoverOverrides(action.tracks, state.coverOverrides);
+      const albums = groupIntoAlbums(library);
       return {
         ...state,
-        library: action.tracks,
+        library,
         albums,
         loadingLibrary: false,
         libraryProgress: null,
@@ -181,6 +214,8 @@ function reducer(state, action) {
       return { ...state, sleepTimerMinutes: action.minutes, sleepTimerEndsAt: action.endsAt };
     case "CANCEL_SLEEP_TIMER":
       return { ...state, sleepTimerMinutes: null, sleepTimerEndsAt: null };
+    case "SET_BACKGROUND_KILL_NOTICE":
+      return { ...state, backgroundKillNotice: action.value };
     case "ADD_TRACK_TO_PLAYLIST": {
       const { playlistId, track } = action;
       const playlist = state.playlists.find((p) => p.id === playlistId);
@@ -310,11 +345,36 @@ function reducer(state, action) {
       return { ...state, fontFamily: action.fontId };
     case "SET_ACCENT_COLOR":
       return { ...state, accentColor: action.color };
-    case "SET_ALBUM_COVER": {
-      const { trackIds, cover } = action;
-      const idSet = new Set(trackIds);
-      const library = state.library.map((t) => (idSet.has(t.id) ? { ...t, cover } : t));
-      return { ...state, library, albums: groupIntoAlbums(library) };
+    // Applied once on launch after loading every persisted override from
+    // IndexedDB — replaces coverOverrides wholesale and reapplies to
+    // whatever's currently in state.library (which may already be
+    // populated from cache hydration, or still empty pending a scan;
+    // either way LOAD_LIBRARY also reapplies coverOverrides, so ordering
+    // between the two doesn't matter for correctness).
+    case "SET_COVER_OVERRIDES": {
+      const coverOverrides = action.overrides;
+      const library = applyCoverOverrides(state.library, coverOverrides);
+      return { ...state, coverOverrides, library, albums: groupIntoAlbums(library) };
+    }
+    case "SET_ALBUM_COVER_OVERRIDE": {
+      const { albumId, cover } = action;
+      const coverOverrides = { ...state.coverOverrides, [albumId]: cover };
+      const library = state.library.map((t) => (albumIdForTrack(t) === albumId ? { ...t, cover } : t));
+      return { ...state, coverOverrides, library, albums: groupIntoAlbums(library) };
+    }
+    case "CLEAR_ALBUM_COVER_OVERRIDE": {
+      const { albumId } = action;
+      const coverOverrides = { ...state.coverOverrides };
+      delete coverOverrides[albumId];
+      // Only the affected album's tracks need their cover recomputed —
+      // regenerating object URLs for the whole library on every unrelated
+      // action would leak blob URLs for no reason.
+      const library = state.library.map((t) => {
+        if (albumIdForTrack(t) !== albumId) return t;
+        const cover = t.coverBytes ? coverObjectUrlFromBytes(t.coverBytes, t.coverFormat) : null;
+        return { ...t, cover };
+      });
+      return { ...state, coverOverrides, library, albums: groupIntoAlbums(library) };
     }
     case "UPDATE_TRACK_METADATA": {
       const { trackId, updates } = action;
@@ -340,8 +400,18 @@ function reducer(state, action) {
 export function PlayerProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const audioRef = useRef(null);
-  const objectUrlRef = useRef(null);
   const engineRef = useRef(null);
+  // Object URLs for the current track and the couple prefetched ahead of
+  // it — id -> Promise<string|null> so concurrent lookups for the same
+  // track share one native read instead of firing it twice. Entries fall
+  // out of the "current + next 2" window get their blob URL revoked (see
+  // the queue-change effect below), so this never grows unbounded across
+  // a long listening session.
+  const trackUrlCacheRef = useRef(new Map());
+  // Bumped on every queue-change effect run so a slow lazy read that
+  // resolves after the user has already skipped past it can't clobber
+  // audio.src with a stale track's URL.
+  const loadTokenRef = useRef(0);
   const accentCacheRef = useRef(new Map());
   // Always-current copy of `actions` (whose methods are recreated every
   // render) — MediaSession action handlers are registered once and need
@@ -351,6 +421,11 @@ export function PlayerProvider({ children }) {
   // Listening-stats accounting: how many real seconds we've accumulated
   // for the currently-loaded track since the last flush to localStorage.
   const listenRef = useRef({ trackId: null, lastTime: 0, pendingSeconds: 0 });
+  // Always-current state.playing, read by the background-kill watchdog's
+  // 'pause' listener (registered once on mount, so it can't close over a
+  // fresh value the normal way).
+  const playingRef = useRef(false);
+  playingRef.current = state.playing;
 
   if (!audioRef.current && typeof Audio !== "undefined") {
     audioRef.current = new Audio();
@@ -365,6 +440,24 @@ export function PlayerProvider({ children }) {
     if (engineRef.current) engineRef.current.resume();
     return engineRef.current;
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Resolves a track to a playable object URL — for browser/studio tracks
+  // (which already carry a real File) this is just URL.createObjectURL;
+  // for native tracks it's a lazy full-file Filesystem.readFile(), done
+  // here for the first time (scanning never reads audio bytes). Results
+  // are cached per track id and never reject — a failed native read
+  // resolves to null so callers can show a toast instead of throwing.
+  const getTrackObjectUrl = useCallback((track) => {
+    const cache = trackUrlCacheRef.current;
+    if (cache.has(track.id)) return cache.get(track.id);
+    const promise = (
+      track.file
+        ? Promise.resolve(URL.createObjectURL(track.file))
+        : readNativeTrackObjectUrl({ folderPath: track.folderPath, relativePath: track.relativePath })
+    ).catch(() => null);
+    cache.set(track.id, promise);
+    return promise;
   }, []);
 
   function flushListen() {
@@ -390,15 +483,45 @@ export function PlayerProvider({ children }) {
     listenRef.current = { trackId: track.id, lastTime: 0, pendingSeconds: 0 };
     if (state.playing) recordListen(track.id, 1);
 
-    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-    const url = URL.createObjectURL(track.file);
-    objectUrlRef.current = url;
-    audio.src = url;
-    audio.playbackRate = state.playbackRate;
-    if (state.playing) {
-      ensureEngine();
-      audio.play().catch(() => {});
+    loadTokenRef.current += 1;
+    const token = loadTokenRef.current;
+    getTrackObjectUrl(track).then((url) => {
+      if (token !== loadTokenRef.current) return; // superseded by a later track change
+      if (!url) {
+        dispatch({
+          type: "SET_QUEUE_TOAST",
+          message: `Couldn't play "${track.title}" — the file may be missing or unreadable.`,
+        });
+        return;
+      }
+      audio.src = url;
+      audio.playbackRate = state.playbackRate;
+      if (state.playing) {
+        ensureEngine();
+        audio.play().catch(() => {});
+      }
+    });
+
+    // Prefetch the next couple of tracks so a native track's lazy
+    // full-file read (a native-bridge round trip) has already finished by
+    // the time playback reaches it, similar in spirit to gapless preload.
+    for (let ahead = 1; ahead <= 2; ahead++) {
+      const upcoming = state.queue[state.queueIndex + ahead];
+      if (upcoming) getTrackObjectUrl(upcoming);
     }
+
+    // Bound memory: revoke blob URLs for anything outside the current
+    // track + the two prefetched ahead of it.
+    const keepIds = new Set(
+      [track.id, state.queue[state.queueIndex + 1]?.id, state.queue[state.queueIndex + 2]?.id].filter(Boolean)
+    );
+    for (const [id, urlPromise] of trackUrlCacheRef.current) {
+      if (!keepIds.has(id)) {
+        urlPromise.then((url) => url && URL.revokeObjectURL(url));
+        trackUrlCacheRef.current.delete(id);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.queueIndex, state.queue]);
 
   useEffect(() => {
@@ -615,35 +738,60 @@ export function PlayerProvider({ children }) {
     dispatch({ type: "LOAD_LIBRARY", tracks, folderName });
   }, []);
 
-  // Any explicit scan — a manual tap or confirming the first-run prompt —
-  // counts as the user approving the current folder path, so future
-  // launches can auto-scan without asking again.
+  // The only way a full filesystem scan happens: a manual tap, confirming
+  // the first-run prompt, or the explicit "Rescan library" action in
+  // Settings. Also counts as the user approving the current folder path,
+  // so future launches can hydrate from cache without asking again.
+  // Persists the freshly-scanned library to IndexedDB (best-effort — a
+  // caching failure shouldn't surface as a scan failure) so the next
+  // launch can skip scanning entirely.
   const pickNativeFolder = useCallback(async () => {
     dispatch({ type: "LOADING_LIBRARY" });
     markFolderConfirmedOnce();
     try {
-      const { files, folderPath } = await readNativeFolderAsFiles((done, total) =>
+      const { tracks, folderPath } = await scanNativeFolder((done, total) =>
         dispatch({ type: "LIBRARY_SCAN_PROGRESS", done, total })
       );
-      const tracks = await parseLibrary(files);
       dispatch({ type: "LOAD_LIBRARY", tracks, folderName: folderPath });
+      saveCachedLibrary({ tracks, folderPath }).catch((err) => {
+        console.warn("Couldn't persist library cache:", err);
+      });
     } catch (err) {
       dispatch({ type: "LIBRARY_ERROR", message: err.message || "Couldn't read your music folder." });
     }
   }, []);
 
-  // Request storage permission as soon as the app launches rather than
-  // waiting for the user to tap "Choose your music folder". If a folder
-  // has already been explicitly confirmed in a previous session, rescan
-  // immediately so reopening the app shows the library directly. On a
-  // first-ever run (nothing confirmed yet), don't silently scan a
-  // guessed/default path — surface it via pendingFolderConfirm and wait
-  // for one explicit tap.
+  // On launch: request storage permission (needed for the lazy per-track
+  // reads playback does later, regardless of cache state), then try to
+  // hydrate straight from the IndexedDB cache — no filesystem scanning at
+  // all when that hits. A real scan only happens if there's no cache yet:
+  // either a first-ever run (surfaced via pendingFolderConfirm, waiting
+  // for one explicit tap) or a folder that was confirmed in a previous
+  // session but somehow has no cached library (e.g. cache was cleared).
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     (async () => {
       const granted = await ensureStoragePermission();
       if (!granted) return;
+
+      // Load persisted cover overrides before anything else touches
+      // state.library — both the cache-hydration and the scan paths below
+      // dispatch LOAD_LIBRARY, which reapplies whatever's in
+      // state.coverOverrides, so this must land first or a user's chosen
+      // cover would flash the embedded one on this launch.
+      const overrideRecords = await loadCoverOverrides();
+      const overrides = {};
+      for (const o of overrideRecords) {
+        overrides[o.albumId] = coverObjectUrlFromBytes(o.coverBytes, o.coverFormat);
+      }
+      dispatch({ type: "SET_COVER_OVERRIDES", overrides });
+
+      const cached = await loadCachedLibrary();
+      if (cached && cached.tracks.length > 0) {
+        dispatch({ type: "LOAD_LIBRARY", tracks: cached.tracks, folderName: cached.folderPath });
+        return;
+      }
+
       const confirmed = await hasConfirmedFolderOnce();
       if (confirmed) {
         pickNativeFolder();
@@ -653,6 +801,17 @@ export function PlayerProvider({ children }) {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Background-kill detection (see backgroundPlaybackWatchdog.js) —
+  // checks whether the previous session looks like it was killed by the
+  // OS mid-playback, then arms the watchdog for this session.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    checkAndClearBackgroundKillMarker().then((killed) => {
+      if (killed) dispatch({ type: "SET_BACKGROUND_KILL_NOTICE", value: true });
+    });
+    return armBackgroundWatchdog(playingRef);
   }, []);
 
   const playAlbumFromTrack = useCallback(
@@ -777,7 +936,27 @@ export function PlayerProvider({ children }) {
     },
     updateTrackMetadata: (trackId, updates) =>
       dispatch({ type: "UPDATE_TRACK_METADATA", trackId, updates }),
-    setAlbumCover: (trackIds, cover) => dispatch({ type: "SET_ALBUM_COVER", trackIds, cover }),
+    // In-app only — does not write back to the file's embedded ID3
+    // picture. `bytes`/`format` are the picked image's raw data, used to
+    // persist the override (downscaled the same way embedded thumbnails
+    // are) so it survives a rescan or app restart; the object URL is
+    // created immediately from the same bytes so the UI updates without
+    // waiting on the IndexedDB write.
+    setAlbumCoverOverride: (albumId, bytes, format) => {
+      const cover = coverObjectUrlFromBytes(bytes, format);
+      dispatch({ type: "SET_ALBUM_COVER_OVERRIDE", albumId, cover });
+      persistCoverOverride(albumId, bytes, format).catch((err) => {
+        console.warn("Couldn't persist cover override:", err);
+      });
+    },
+    // "Reset to original" — drops the override so the album falls back to
+    // whatever's embedded in the files' own tags.
+    clearAlbumCoverOverride: (albumId) => {
+      dispatch({ type: "CLEAR_ALBUM_COVER_OVERRIDE", albumId });
+      removePersistedCoverOverride(albumId).catch((err) => {
+        console.warn("Couldn't clear persisted cover override:", err);
+      });
+    },
     setEqBand: (index, value) => {
       if (engineRef.current) engineRef.current.setBandGain(index, value);
       dispatch({ type: "SET_EQ_BAND", index, value });
@@ -791,6 +970,7 @@ export function PlayerProvider({ children }) {
     setSleepTimer: (minutes) =>
       dispatch({ type: "SET_SLEEP_TIMER", minutes, endsAt: Date.now() + minutes * 60000 }),
     cancelSleepTimer: () => dispatch({ type: "CANCEL_SLEEP_TIMER" }),
+    dismissBackgroundKillNotice: () => dispatch({ type: "SET_BACKGROUND_KILL_NOTICE", value: false }),
     fixAlbumTrackOrder: async (album) => {
       dispatch({ type: "SET_TRACK_ORDER_STATUS", status: "Looking up track order…" });
       const result = await fetchCanonicalTrackOrder(album.title, album.artist);
@@ -884,6 +1064,7 @@ export function PlayerProvider({ children }) {
     state.libraryError, state.libraryProgress, state.pendingFolderConfirm, state.eqBands,
     state.eqPreset, state.playlists, state.studioStatus, state.trackOrderStatus, state.queueToast,
     state.sleepTimerMinutes, state.sleepTimerEndsAt,
+    state.coverOverrides, state.backgroundKillNotice,
   ]);
 
   return (

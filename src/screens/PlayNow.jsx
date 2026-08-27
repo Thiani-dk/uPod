@@ -108,45 +108,55 @@ export default function PlayNow({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
 
   return (
     <div className="playnow-screen">
-      <div className="stat-grid">
-        <div className="stat-tile">
-          <div className="stat-value">{stats.lifetimeTracksPlayed}</div>
-          <div className="stat-label">Lifetime tracks played</div>
-        </div>
-        <div className="stat-tile">
-          <div className="stat-value">{stats.totals.genres}</div>
-          <div className="stat-label">Genres</div>
-        </div>
-        <div className="stat-tile">
-          <div className="stat-value">{stats.totals.tracks}</div>
-          <div className="stat-label">Tracks</div>
-        </div>
-        <div className="stat-tile">
-          <div className="stat-value">{stats.totals.artists}</div>
-          <div className="stat-label">Artists</div>
-        </div>
-        <div className="stat-tile">
-          <div className="stat-value">{stats.totals.albums}</div>
-          <div className="stat-label">Albums</div>
-        </div>
-        <div className="stat-tile">
-          <div className="stat-value">{stats.totals.neverPlayedCount}</div>
-          <div className="stat-label">Never played</div>
+      <div className="stat-card stat-card-hero">
+        <div className="stat-card-title">Listening</div>
+        <div className="stat-hero-grid">
+          <div className="stat-hero">
+            <div className="stat-hero-value">{stats.tracksPlayedThisMonth}</div>
+            <div className="stat-hero-label">Tracks this month</div>
+          </div>
+          <div className="stat-hero">
+            <div className="stat-hero-value">{stats.timePlayedThisMonth}</div>
+            <div className="stat-hero-label">Time this month</div>
+          </div>
+          <div className="stat-hero">
+            <div className="stat-hero-value">{stats.lifetimeTracksPlayed}</div>
+            <div className="stat-hero-label">Lifetime tracks played</div>
+          </div>
+          <div className="stat-hero">
+            <div className="stat-hero-value">{stats.totalTimePlayed}</div>
+            <div className="stat-hero-label">Total time played</div>
+          </div>
         </div>
       </div>
 
-      <div className="stat-grid stat-grid-wide">
-        <div className="stat-tile">
-          <div className="stat-value">{stats.tracksPlayedThisMonth}</div>
-          <div className="stat-label">Tracks played this month</div>
-        </div>
-        <div className="stat-tile">
-          <div className="stat-value">{stats.timePlayedThisMonth}</div>
-          <div className="stat-label">Time played this month</div>
-        </div>
-        <div className="stat-tile">
-          <div className="stat-value">{stats.totalTimePlayed}</div>
-          <div className="stat-label">Total time played</div>
+      <div className="stat-card stat-card-lib">
+        <div className="stat-card-title">Your library</div>
+        <div className="stat-mini-grid">
+          <div className="stat-mini">
+            <div className="stat-mini-value">{stats.totals.tracks}</div>
+            <div className="stat-mini-label">Tracks</div>
+          </div>
+          <div className="stat-mini">
+            <div className="stat-mini-value">{stats.totals.artists}</div>
+            <div className="stat-mini-label">Artists</div>
+          </div>
+          <div className="stat-mini">
+            <div className="stat-mini-value">{stats.totals.albums}</div>
+            <div className="stat-mini-label">Albums</div>
+          </div>
+          <div className="stat-mini">
+            <div className="stat-mini-value">{stats.totals.genres}</div>
+            <div className="stat-mini-label">Genres</div>
+          </div>
+          <div className="stat-mini">
+            <div className="stat-mini-value">{stats.totals.neverPlayedCount}</div>
+            <div className="stat-mini-label">Never played</div>
+          </div>
+          <div className="stat-mini">
+            <div className="stat-mini-value">{stats.totals.modifiedCount}</div>
+            <div className="stat-mini-label">Tracks modified</div>
+          </div>
         </div>
       </div>
 

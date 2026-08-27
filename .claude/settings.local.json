@@ -39,7 +39,31 @@
       "Bash(google-chrome --headless --disable-gpu --no-sandbox --hide-scrollbars --window-size=375,667 --screenshot=/tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/np-se2.png \"file:///tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/np-preview.html\")",
       "Bash(google-chrome --headless --disable-gpu --no-sandbox --hide-scrollbars --window-size=390,844 --screenshot=/tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/np-14.png \"file:///tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/np-preview.html\")",
       "Bash(google-chrome --headless --disable-gpu --no-sandbox --hide-scrollbars --window-size=390,844 --screenshot=/tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/imm-closed.png \"file:///tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/immersive-test.html\")",
-      "Bash(google-chrome --headless --disable-gpu --no-sandbox --hide-scrollbars --window-size=390,844 --screenshot=/tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/imm-open.png \"file:///tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/immersive-test-open.html\")"
+      "Bash(google-chrome --headless --disable-gpu --no-sandbox --hide-scrollbars --window-size=390,844 --screenshot=/tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/imm-open.png \"file:///tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/bedbe1c4-1fc3-4532-8246-7fc3a1fedc46/scratchpad/immersive-test-open.html\")",
+      "Bash(node -e ' *)",
+      "Bash(npx oxlint *)",
+      "Bash(timeout 280 ./gradlew assembleDebug --offline)",
+      "Bash(update-alternatives --list java)",
+      "Read(//usr/lib/**)",
+      "Bash(find / -maxdepth 4 -iname \"jdk*\" -o -iname \"*android-studio*\")",
+      "Bash(JAVA_HOME=/snap/android-studio/236/jbr timeout 290 ./gradlew assembleDebug)",
+      "Bash(timeout 5 curl -sI https://services.gradle.org)",
+      "Bash(JAVA_HOME=/snap/android-studio/236/jbr ./gradlew assembleDebug --console=plain)",
+      "Bash(tee /tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/fe3f4720-b12e-454d-adc6-b3d7efe9724a/scratchpad/gradle_build.log)",
+      "Bash(tee /tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/fe3f4720-b12e-454d-adc6-b3d7efe9724a/scratchpad/gradle_build2.log)",
+      "Bash(curl -s http://localhost:9333/json)",
+      "Bash(node -e \"console.log\\(process.version\\)\")",
+      "Bash(python3 -c \"import websockets\")",
+      "Bash(python3 -c \"import websocket\")",
+      "Bash(node *)",
+      "Bash(curl -sv http://localhost:9333/json)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(tee /tmp/claude-1000/-home-katiso-Desktop-vibe-coding-uPod-upod/fe3f4720-b12e-454d-adc6-b3d7efe9724a/scratchpad/gradle_build3.log)",
+      "WebSearch",
+      "WebFetch(domain:help.salestrail.io)",
+      "WebFetch(domain:www.salestrail.io)",
+      "Bash(grep -n \"^import\\\\|queueToast: null,$\" src/store/PlayerContext.jsx)",
+      "Bash(grep -n \"state.coverOverrides,$\" src/store/PlayerContext.jsx)"
     ]
   }
 }

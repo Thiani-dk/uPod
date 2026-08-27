@@ -5,8 +5,10 @@
 import React, { useState } from "react";
 import { X } from "lucide-react";
 import { usePlayerActions } from "../store/PlayerContext";
+import useBackButtonClose from "../utils/useBackButtonClose";
 
 export default function MetadataEditModal({ track, onClose }) {
+  useBackButtonClose(onClose);
   const { updateTrackMetadata } = usePlayerActions();
   const [title, setTitle] = useState(track.title);
   const [artist, setArtist] = useState(track.artist);

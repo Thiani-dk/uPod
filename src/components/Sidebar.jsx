@@ -33,9 +33,10 @@ export default function Sidebar({ screen, setScreen, open, setOpen, onOpenPlayli
             <div className="brand-name">uPod</div>
             <div className="brand-tag">it's all about you!</div>
           </div>
-          {/* Prominent close button, per design notes — not just tap-outside */}
-          <button className="icon-btn only-mobile" onClick={() => setOpen(false)}>
-            <X size={18} />
+          {/* Prominent close button, per design notes — not just tap-outside.
+              Bare icon (no box) — styled in .sidebar-close. */}
+          <button className="sidebar-close only-mobile" onClick={() => setOpen(false)} aria-label="Close menu">
+            <X size={22} />
           </button>
         </div>
 

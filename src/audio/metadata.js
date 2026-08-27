@@ -1,12 +1,22 @@
 // src/audio/metadata.js
-// Parses MP3/FLAC/M4A/OGG metadata from File objects and groups tracks into albums.
+// Parses MP3/FLAC/M4A/OGG metadata — either from browser File objects (web
+// folder picker) or, on native, from a {relativePath, folderPath, size}
+// descriptor read via partial native reads (see nativeTagReader.js) — and
+// groups the resulting tracks into albums.
 import jsmediatags from "jsmediatags";
+import { readNativeTags } from "./nativeTagReader";
 
 export const SUPPORTED_EXTENSIONS = ["mp3", "flac", "m4a", "ogg"];
+
+const VOICE_NOTE_PATTERN = /(^|[\\/])(PTT-|AUD-.*-WA|voice[- _]?message|voicemail)/i;
 
 export function isAudioFile(filename) {
   const ext = filename.split(".").pop().toLowerCase();
   return SUPPORTED_EXTENSIONS.includes(ext);
+}
+
+export function isVoiceNote(filename) {
+  return VOICE_NOTE_PATTERN.test(filename);
 }
 
 function hashString(str) {
@@ -34,11 +44,24 @@ function readTagsFromFile(file) {
   });
 }
 
-function coverArtObjectUrl(picture) {
-  if (!picture) return null;
+// Raw bytes + mime type, kept separate from the object URL so callers that
+// persist the library (libraryCache.js) can store the bytes themselves —
+// URL.createObjectURL() results don't survive an app restart, but the
+// underlying bytes stashed in IndexedDB do, and a fresh object URL can be
+// regenerated from them cheaply on the next launch.
+function extractCoverData(picture) {
+  if (!picture || !picture.data || !picture.data.length) return null;
   try {
-    const { data, format } = picture;
-    const blob = new Blob([new Uint8Array(data)], { type: format });
+    return { bytes: new Uint8Array(picture.data), format: picture.format || "image/jpeg" };
+  } catch {
+    return null;
+  }
+}
+
+export function coverObjectUrlFromBytes(bytes, format) {
+  if (!bytes || !bytes.length) return null;
+  try {
+    const blob = new Blob([bytes], { type: format || "image/jpeg" });
     return URL.createObjectURL(blob);
   } catch {
     return null;
@@ -49,9 +72,18 @@ export function normalizeKey(str) {
   return (str || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-export async function parseTrackFile(file) {
-  const tags = await readTagsFromFile(file);
-  const title = tags.title || file.name.replace(/\.[^/.]+$/, "");
+// The same album-identity key groupIntoAlbums uses to bucket tracks —
+// pulled out so cover-override persistence (keyed by album id) can match
+// tracks to albums without duplicating this logic and risking drift.
+export function albumIdForTrack(t) {
+  return t.hasAlbumTag ? (t.albumKey || normalizeKey(t.album)) : `single::${t.id}`;
+}
+
+// Shared shape-building logic between the browser (File-backed) and native
+// (descriptor-backed) parsing paths — everything after tags have been read
+// is identical regardless of where the bytes came from.
+function buildTrackFromTags(tags, { id, name, addedAt, extra }) {
+  const title = tags.title || name.replace(/\.[^/.]+$/, "");
   const artist = (tags.artist || "Unknown Artist").trim();
   const hasAlbumTag = Boolean(tags.album && tags.album.trim());
   const album = (tags.album || "Unknown Album").trim();
@@ -59,11 +91,11 @@ export async function parseTrackFile(file) {
   const track = tags.track ? parseInt(String(tags.track).split("/")[0], 10) : 0;
   const year = tags.year || null;
   const genre = (tags.genre || "").trim() || null;
-  const cover = coverArtObjectUrl(tags.picture);
+  const coverData = extractCoverData(tags.picture);
+  const cover = coverData ? coverObjectUrlFromBytes(coverData.bytes, coverData.format) : null;
 
   return {
-    id: `${file.name}-${file.size}-${file.lastModified}`,
-    file,
+    id,
     title,
     artist,
     albumArtist,
@@ -73,16 +105,41 @@ export async function parseTrackFile(file) {
     track: Number.isFinite(track) ? track : 0,
     year,
     genre,
-    addedAt: file.lastModified || Date.now(),
+    addedAt,
     cover,
+    coverBytes: coverData?.bytes || null,
+    coverFormat: coverData?.format || null,
+    ...extra,
   };
+}
+
+export async function parseTrackFile(file) {
+  const tags = await readTagsFromFile(file);
+  return buildTrackFromTags(tags, {
+    id: `${file.name}-${file.size}-${file.lastModified}`,
+    name: file.name,
+    addedAt: file.lastModified || Date.now(),
+    extra: { file },
+  });
+}
+
+// Native scan path: reads only the tag-relevant byte ranges (never the
+// audio payload — see nativeTagReader.js) and produces a track with no
+// `file`/bytes attached, just enough (`relativePath` + `folderPath`) for
+// PlayerContext to lazily read the real audio bytes at play time.
+export async function parseNativeTrackDescriptor({ name, relativePath, folderPath, directory, size, mtime }) {
+  const tags = await readNativeTags({ path: `${folderPath}/${relativePath}`, directory, size });
+  return buildTrackFromTags(tags, {
+    id: `${relativePath}-${size}-${mtime || 0}`,
+    name,
+    addedAt: mtime || Date.now(),
+    extra: { relativePath, folderPath, size, native: true },
+  });
 }
 
 export async function parseLibrary(fileList) {
   const files = Array.from(fileList).filter((f) => isAudioFile(f.name));
-
-  const voiceNotePattern = /(^|[\\/])(PTT-|AUD-.*-WA|voice[- _]?message|voicemail)/i;
-  const musicFiles = files.filter((f) => !voiceNotePattern.test(f.name));
+  const musicFiles = files.filter((f) => !isVoiceNote(f.name));
 
   const tracks = [];
   for (const file of musicFiles) {
@@ -94,7 +151,7 @@ export async function parseLibrary(fileList) {
 export function groupIntoAlbums(tracks) {
   const map = new Map();
   for (const t of tracks) {
-    const key = t.hasAlbumTag ? (t.albumKey || normalizeKey(t.album)) : `single::${t.id}`;
+    const key = albumIdForTrack(t);
     if (!map.has(key)) {
       const seed = t.hasAlbumTag ? t.album : `${t.title}::${t.artist}::${t.id}`;
       map.set(key, {

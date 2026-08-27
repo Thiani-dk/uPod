@@ -5,8 +5,10 @@
 import React, { useState } from "react";
 import { X, Plus, Bookmark, ListMusic, Check } from "lucide-react";
 import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
+import useBackButtonClose from "../utils/useBackButtonClose";
 
 export default function AddToPlaylistModal({ track, onClose }) {
+  useBackButtonClose(onClose);
   const { playlists } = usePlayerState();
   const { addTrackToPlaylist, removeTrackFromPlaylist, createPlaylistWithTrack } = usePlayerActions();
   const [creatingNew, setCreatingNew] = useState(false);

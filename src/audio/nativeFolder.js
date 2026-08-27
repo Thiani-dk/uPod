@@ -1,10 +1,13 @@
 // src/audio/nativeFolder.js
 // Reads a user-configurable folder from device shared storage via
-// @capacitor/filesystem and turns its audio files into real File objects,
-// so the result can be fed into the exact same parseLibrary() path as the
-// browser folder picker.
+// @capacitor/filesystem. Scanning (scanNativeFolder) only ever reads the
+// small byte ranges jsmediatags needs for tags — never a track's full
+// audio payload (see nativeTagReader.js for why that's possible). The full
+// bytes of a given track are only ever read on demand, right before it's
+// actually played, via readNativeTrackObjectUrl().
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Preferences } from "@capacitor/preferences";
+import { isAudioFile, isVoiceNote, parseNativeTrackDescriptor } from "./metadata";
 
 // Every music path is confined under this root — scanning stays limited
 // to the Downloads folder tree, never the whole device.
@@ -23,17 +26,10 @@ const CONFIRMED_ONCE_KEY = "upod_folder_confirmed_once";
 // pathological/circular structure.
 const MAX_RECURSION_DEPTH = 8;
 
-// How many files to read concurrently — parallel enough to hide the
-// native-bridge round-trip latency per file, capped low enough to avoid
-// holding hundreds of decoded base64 blobs in memory at once.
+// How many tracks to parse concurrently during a scan — parallel enough to
+// hide the native-bridge round-trip latency per partial read, capped low
+// enough to avoid firing off hundreds of concurrent native calls at once.
 const READ_CONCURRENCY = 8;
-
-const AUDIO_EXTENSIONS = ["mp3", "flac", "m4a", "ogg"];
-
-function isAudioFile(name) {
-  const ext = name.split(".").pop().toLowerCase();
-  return AUDIO_EXTENSIONS.includes(ext);
-}
 
 function mimeForExt(ext) {
   switch (ext) {
@@ -145,42 +141,32 @@ async function walkAudioEntries(musicFolder, relativePath, depth = 0) {
   return found;
 }
 
-async function readEntryAsFile(musicFolder, entry) {
-  const ext = entry.name.split(".").pop().toLowerCase();
-  const readResult = await Filesystem.readFile({
-    path: `${musicFolder}/${entry.relativePath}`,
-    directory: Directory.ExternalStorage,
-  });
-  const blob = base64ToBlob(readResult.data, mimeForExt(ext));
-  const file = new File([blob], entry.name, {
-    type: blob.type,
-    lastModified: entry.mtime || Date.now(),
-  });
-  // parseLibrary/pickFolder read webkitRelativePath to derive the
-  // displayed folder name — File doesn't expose it natively, so we set it
-  // the same way the browser's webkitdirectory input would.
-  Object.defineProperty(file, "webkitRelativePath", {
-    value: `${musicFolder}/${entry.relativePath}`,
-    writable: false,
-  });
-  return file;
-}
-
-// Reads `entries` into File objects with up to `concurrency` reads in
-// flight at once — sequential awaiting one file at a time is the main
-// bottleneck for large libraries (each read is a native-bridge round
-// trip), but unbounded Promise.all risks holding hundreds of decoded
-// files in memory simultaneously. Reports progress via onProgress(done,
-// total) as each file finishes, in no particular order.
-async function readEntriesWithConcurrency(musicFolder, entries, concurrency, onProgress) {
-  const files = new Array(entries.length);
+// Parses `entries` into tracks with up to `concurrency` in flight at once
+// — sequential awaiting one file at a time is the main bottleneck for
+// large libraries (each byte range read is a native-bridge round trip),
+// but unbounded Promise.all would fire off hundreds of concurrent native
+// calls at once. Each track only costs a handful of small partial reads
+// now (not a whole-file read), so this concurrency exists to hide
+// round-trip latency, not to bound memory the way it used to.
+// Reports progress via onProgress(done, total) as each track finishes, in
+// no particular order.
+async function parseEntriesWithConcurrency(musicFolder, entries, concurrency, onProgress) {
+  const tracks = new Array(entries.length);
   let nextIndex = 0;
   let done = 0;
 
   async function worker() {
     while (nextIndex < entries.length) {
       const i = nextIndex++;
-      files[i] = await readEntryAsFile(musicFolder, entries[i]);
+      const entry = entries[i];
+      tracks[i] = await parseNativeTrackDescriptor({
+        name: entry.name,
+        relativePath: entry.relativePath,
+        folderPath: musicFolder,
+        directory: Directory.ExternalStorage,
+        size: entry.size,
+        mtime: entry.mtime,
+      });
       done++;
       if (onProgress) onProgress(done, entries.length);
     }
@@ -188,18 +174,19 @@ async function readEntriesWithConcurrency(musicFolder, entries, concurrency, onP
 
   const workers = Array.from({ length: Math.min(concurrency, entries.length) }, () => worker());
   await Promise.all(workers);
-  return files;
+  return tracks;
 }
 
-// Reads every supported audio file anywhere under the currently configured
+// Scans every supported audio file anywhere under the currently configured
 // music folder (searching subfolders, since albums are usually one level
-// down) and returns them as real File objects (name, size, lastModified
-// all set), so they behave identically to files picked via
-// <input webkitdirectory>. Always re-reads the stored folder path, so a
-// change made in Settings takes effect on the next scan without a rebuild.
-// onProgress(done, total), if given, is called as each file finishes
-// reading, so callers can show scan progress for large libraries.
-export async function readNativeFolderAsFiles(onProgress) {
+// down) and returns fully-tagged tracks — without ever reading a track's
+// full audio payload. Only the small byte ranges jsmediatags needs for
+// tags are read (see nativeTagReader.js), via @capacitor/filesystem's
+// native offset/length support. Always re-reads the stored folder path, so
+// a change made in Settings takes effect on the next scan without a
+// rebuild. onProgress(done, total), if given, is called as each track
+// finishes parsing, so callers can show scan progress for large libraries.
+export async function scanNativeFolder(onProgress) {
   const granted = await ensureStoragePermission();
   if (!granted) {
     throw new Error(
@@ -208,8 +195,21 @@ export async function readNativeFolderAsFiles(onProgress) {
   }
 
   const musicFolder = await getMusicFolderPath();
-  const audioEntries = await walkAudioEntries(musicFolder, "");
-  const files = await readEntriesWithConcurrency(musicFolder, audioEntries, READ_CONCURRENCY, onProgress);
+  const audioEntries = (await walkAudioEntries(musicFolder, "")).filter((e) => !isVoiceNote(e.name));
+  const tracks = await parseEntriesWithConcurrency(musicFolder, audioEntries, READ_CONCURRENCY, onProgress);
 
-  return { files, folderPath: musicFolder };
+  return { tracks, folderPath: musicFolder };
+}
+
+// Reads a track's *full* audio bytes — the one place this still happens —
+// called lazily right before the track is actually going to play (see
+// PlayerContext's queue-change effect), never during a scan.
+export async function readNativeTrackObjectUrl({ folderPath, relativePath }) {
+  const ext = relativePath.split(".").pop().toLowerCase();
+  const readResult = await Filesystem.readFile({
+    path: `${folderPath}/${relativePath}`,
+    directory: Directory.ExternalStorage,
+  });
+  const blob = base64ToBlob(readResult.data, mimeForExt(ext));
+  return URL.createObjectURL(blob);
 }

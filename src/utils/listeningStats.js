@@ -87,6 +87,12 @@ export function computeLibraryStats(library, albums, playlists) {
   const artistSet = new Set(library.map((t) => t.artist));
   const genreSet = new Set(library.map((t) => t.genre).filter(Boolean));
 
+  // Tracks that came out of a Studio effect render (slowed+reverb, etc).
+  // ADD_RENDERED_TRACK stamps isStudioRender:true on each one before it
+  // lands in the library, and also files it into that effect's playlist —
+  // counting the flag directly is the single source of truth either way.
+  const modifiedCount = library.filter((t) => t.isStudioRender).length;
+
   const neverPlayed = library.filter((t) => !byTrack.has(t.id));
 
   const mostPlayedThisMonth = [...byTrack.entries()]
@@ -126,6 +132,7 @@ export function computeLibraryStats(library, albums, playlists) {
       albums: albums.length,
       genres: genreSet.size,
       neverPlayedCount: neverPlayed.length,
+      modifiedCount,
     },
     lifetimeTracksPlayed,
     tracksPlayedThisMonth,

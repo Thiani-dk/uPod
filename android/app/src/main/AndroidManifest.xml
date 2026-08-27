@@ -39,6 +39,17 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Media-session foreground service (@capgo/capacitor-media-session).
+         The plugin's manifest fragment merges in FOREGROUND_SERVICE, but on
+         Android 14+ (API 34+) any FGS declaring foregroundServiceType
+         "mediaPlayback" ALSO needs this type-specific permission in the
+         app's own manifest — without it MediaSessionService.connectAndInitialize
+         throws SecurityException and playback crashes. Both are listed
+         explicitly here so it doesn't depend on library merge order. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- Declared so "All files access" appears as a manual toggle in

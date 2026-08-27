@@ -1,8 +1,12 @@
 // src/App.jsx
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
+import { App as CapacitorApp } from "@capacitor/app";
 import "./styles/global.css";
-import { PlayerProvider, usePlayerState } from "./store/PlayerContext";
+import { PlayerProvider, usePlayerState, usePlayerActions } from "./store/PlayerContext";
+import { consumeTopBackHandler } from "./utils/backHandlerStack";
+import { BACKGROUND_PLAYBACK_GUIDANCE } from "./utils/backgroundPlaybackWatchdog";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import MiniPlayer from "./components/MiniPlayer";
@@ -17,8 +21,26 @@ import Karaoke from "./screens/Karaoke";
 import Settings from "./screens/Settings";
 import { getFontStack } from "./utils/fonts";
 
+// Where the hardware/gesture back button should land from each top-level
+// screen — mirrors the same targets each screen's own on-screen back
+// button already uses (AlbumDetail/InstantMix -> library, eq/karaoke ->
+// nowplaying since they're only ever opened from there). "playlist" isn't
+// listed here because its target is dynamic (playlistOrigin). "library"
+// has no entry: it's the root, so hardware back there falls through to
+// exiting the app.
+const SCREEN_BACK_TARGETS = {
+  album: "library",
+  instantmix: "library",
+  eq: "nowplaying",
+  karaoke: "nowplaying",
+  nowplaying: "library",
+  studio: "library",
+  settings: "library",
+};
+
 function Shell() {
-  const { theme, accentColor, fontFamily, queue, queueIndex, albums } = usePlayerState();
+  const { theme, accentColor, fontFamily, queue, queueIndex, albums, backgroundKillNotice } = usePlayerState();
+  const { dismissBackgroundKillNotice } = usePlayerActions();
   const [screen, setScreen] = useState("library");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeAlbum, setActiveAlbum] = useState(null);
@@ -27,6 +49,44 @@ function Shell() {
   // shortcut...) so the playlist's Back button returns you there instead
   // of always dropping you back on Studio.
   const [playlistOrigin, setPlaylistOrigin] = useState("library");
+
+  // Hardware/gesture back button: without this, @capacitor/app's default
+  // behavior (no web history to fall back on, since this is a plain state
+  // machine rather than a router) is to exit the app immediately from
+  // anywhere. Priority order: close a modal/sheet first (any registered
+  // via useBackButtonClose, e.g. Queue, AddToPlaylist, MetadataEdit,
+  // TrackActionsMenu, FontPicker), then close the sidebar, then navigate
+  // up a level using the same targets each screen's own back button uses,
+  // and only exit once already at the library root with nothing open.
+  const backStateRef = useRef();
+  backStateRef.current = { screen, sidebarOpen, playlistOrigin };
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let handle;
+    CapacitorApp.addListener("backButton", () => {
+      if (consumeTopBackHandler()) return;
+      const { screen: curScreen, sidebarOpen: curSidebarOpen, playlistOrigin: curOrigin } = backStateRef.current;
+      if (curSidebarOpen) {
+        setSidebarOpen(false);
+        return;
+      }
+      if (curScreen === "playlist") {
+        setScreen(curOrigin);
+        return;
+      }
+      const target = SCREEN_BACK_TARGETS[curScreen];
+      if (target) {
+        setScreen(target);
+        return;
+      }
+      CapacitorApp.exitApp();
+    }).then((h) => {
+      handle = h;
+    });
+    return () => {
+      handle?.remove();
+    };
+  }, []);
 
   function openAlbum(album) {
     setActiveAlbum(album);
@@ -55,6 +115,31 @@ function Shell() {
         />
         <div className="main">
           <TopBar onMenu={() => setSidebarOpen(true)} screen={screen} />
+          {backgroundKillNotice && (
+            <div
+              style={{
+                margin: "0 14px",
+                padding: "10px 12px",
+                borderRadius: 10,
+                background: "var(--panel)",
+                border: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                fontSize: 12,
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, marginBottom: 3 }}>Playback stopped in the background</div>
+                <div className="settings-row-sub">
+                  {BACKGROUND_PLAYBACK_GUIDANCE.primary} See Settings for the full guidance.
+                </div>
+              </div>
+              <button className="ghost-btn" style={{ padding: "4px 10px" }} onClick={dismissBackgroundKillNotice}>
+                Got it
+              </button>
+            </div>
+          )}
           <div className="content">
             {screen === "nowplaying" && (
               <NowPlaying
@@ -97,7 +182,9 @@ function Shell() {
 export default function App() {
   return (
     <PlayerProvider>
-      <Shell />
+      <ErrorBoundary>
+        <Shell />
+      </ErrorBoundary>
     </PlayerProvider>
   );
 }

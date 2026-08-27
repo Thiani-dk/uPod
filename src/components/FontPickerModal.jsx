@@ -3,8 +3,10 @@ import React from "react";
 import { X, Check } from "lucide-react";
 import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
 import { FONT_OPTIONS } from "../utils/fonts";
+import useBackButtonClose from "../utils/useBackButtonClose";
 
 export default function FontPickerModal({ onClose }) {
+  useBackButtonClose(onClose);
   const { fontFamily } = usePlayerState();
   const { setFontFamily } = usePlayerActions();
 

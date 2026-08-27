@@ -12,7 +12,6 @@ import MetadataEditModal from "../components/MetadataEditModal";
 
 const TABS = [
   { id: "playnow", label: "Play Now" },
-  { id: "search", label: "Search" },
   { id: "albums", label: "Albums" },
   { id: "playlists", label: "Playlists" },
   { id: "songs", label: "Tracks" },
@@ -25,8 +24,10 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   const [query, setQuery] = useState("");
   // Deliberately separate from `query` above — that one drives each tab's
   // own siloed filter (Albums search only matches albums, etc). This one
-  // powers the dedicated Search tab, which spans the whole library at once
-  // regardless of tab (see src/utils/search.js).
+  // powers the persistent top search bar, which spans the whole library at
+  // once (Artists/Albums/Playlists/Tracks) regardless of which tab pill is
+  // selected (see src/utils/search.js). While it has a value, its results
+  // replace whatever the current tab would otherwise render.
   const [searchQuery, setSearchQuery] = useState("");
   const [menuTrack, setMenuTrack] = useState(null);
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
@@ -34,6 +35,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   const inputRef = useRef(null);
 
   const searchResults = useUnifiedSearch(searchQuery);
+  const searching = searchQuery.trim().length > 0;
 
   const q = query.trim().toLowerCase();
 
@@ -67,6 +69,9 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   function filterByArtist(artist) {
     setTab("songs");
     setQuery(artist);
+    // Landing on the Tracks tab filtered to this artist only makes sense
+    // if the unified results stop covering it.
+    setSearchQuery("");
   }
 
   const favPlaylist = playlists.find((p) => p.id === FAVORITES_PLAYLIST_ID);
@@ -96,8 +101,26 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         onChange={handleFiles}
       />
 
-      {tab !== "playnow" && tab !== "search" && (
-        <div className="search-bar">
+      {/* Persistent unified search — always visible, spans the whole
+          library, independent of the selected tab pill. */}
+      <div className="search-bar">
+        <Search size={16} />
+        <input
+          placeholder="Search your whole library…"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+        />
+        {searchQuery && (
+          <button className="icon-btn small" onClick={() => setSearchQuery("")}>
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      {/* Per-tab filter — narrows just the current tab. Hidden while a
+          unified search is active (its results replace the tab anyway). */}
+      {!searching && tab !== "playnow" && (
+        <div className="search-bar search-bar-tab">
           <Search size={16} />
           <input
             placeholder={searchPlaceholder}
@@ -106,23 +129,6 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
           />
           {query && (
             <button className="icon-btn small" onClick={() => setQuery("")}>
-              <X size={14} />
-            </button>
-          )}
-        </div>
-      )}
-
-      {tab === "search" && (
-        <div className="search-bar">
-          <Search size={16} />
-          <input
-            placeholder="Search your whole library…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            autoFocus
-          />
-          {searchQuery && (
-            <button className="icon-btn small" onClick={() => setSearchQuery("")}>
               <X size={14} />
             </button>
           )}
@@ -177,25 +183,20 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         </div>
       )}
 
-      {selectedFolderName && albums.length > 0 && tab !== "playnow" && tab !== "search" && (
+      {selectedFolderName && albums.length > 0 && !searching && tab !== "playnow" && (
         <div className="folder-chip" style={{ marginBottom: 14 }}>
           <FolderOpen size={14} />
           <span>{selectedFolderName}</span>
         </div>
       )}
 
-      {albums.length > 0 && tab === "playnow" && (
+      {albums.length > 0 && !searching && tab === "playnow" && (
         <PlayNow onOpenAlbum={onOpenAlbum} onOpenPlaylist={onOpenPlaylist} onOpenInstantMix={onOpenInstantMix} />
       )}
 
-      {albums.length > 0 && tab === "search" && (
+      {albums.length > 0 && searching && (
         <div className="search-results">
-          {!searchQuery.trim() && (
-            <div className="empty-state">Search across every track, album, playlist, and artist.</div>
-          )}
-
-          {searchQuery.trim() &&
-            searchResults.tracks.length === 0 &&
+          {searchResults.tracks.length === 0 &&
             searchResults.albums.length === 0 &&
             searchResults.playlists.length === 0 &&
             searchResults.artists.length === 0 && (
@@ -306,7 +307,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         </div>
       )}
 
-      {albums.length > 0 && tab === "albums" && (
+      {albums.length > 0 && !searching && tab === "albums" && (
         <div className="album-grid">
           {filteredAlbums.map((al) => (
             <button key={al.id} className="album-card" onClick={() => onOpenAlbum(al)}>
@@ -328,7 +329,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         </div>
       )}
 
-      {albums.length > 0 && tab === "playlists" && (
+      {albums.length > 0 && !searching && tab === "playlists" && (
         <div className="playlist-list">
           {filteredPlaylists.map((p) => (
             <button key={p.id} className="playlist-row" onClick={() => onOpenPlaylist(p)}>
@@ -351,7 +352,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         </div>
       )}
 
-      {albums.length > 0 && tab === "songs" && (
+      {albums.length > 0 && !searching && tab === "songs" && (
         <div className="track-list">
           {filteredSongs.map((t) => {
             const isFavorite = favPlaylist?.trackIds.includes(t.id);

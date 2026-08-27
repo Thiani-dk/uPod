@@ -7,6 +7,7 @@ import { FONT_OPTIONS } from "../utils/fonts";
 import FontPickerModal from "../components/FontPickerModal";
 import { BUTTON_PACKS } from "../components/TransportButtons";
 import { getMusicFolderPath, setMusicFolderPath, MUSIC_FOLDER_ROOT } from "../audio/nativeFolder";
+import { BACKGROUND_PLAYBACK_GUIDANCE } from "../utils/backgroundPlaybackWatchdog";
 
 function PackPreview({ pack }) {
   const { shuffle: ShuffleIcon, back: BackIcon, forward: ForwardIcon, repeat: RepeatIcon } = pack.icons;
@@ -22,7 +23,7 @@ function PackPreview({ pack }) {
 }
 
 export default function Settings() {
-  const { theme, buttonPack, fontFamily, selectedFolderName, albums, library, libraryError } = usePlayerState();
+  const { theme, buttonPack, fontFamily, selectedFolderName, albums, library, libraryError, loadingLibrary, libraryProgress } = usePlayerState();
   const { setTheme, setButtonPack, pickFolder, pickNativeFolder } = usePlayerActions();
   const inputRef = useRef(null);
   const [fontPickerOpen, setFontPickerOpen] = useState(false);
@@ -117,6 +118,24 @@ export default function Settings() {
           </div>
         )}
 
+        {isNative && (
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">Rescan library</div>
+              <div className="settings-row-sub">
+                {loadingLibrary
+                  ? libraryProgress
+                    ? `Scanning… ${libraryProgress.done}/${libraryProgress.total}`
+                    : "Scanning…"
+                  : "The library loads from a saved cache on launch — rescan after adding or removing tracks."}
+              </div>
+            </div>
+            <button className="ghost-btn" onClick={pickNativeFolder} disabled={loadingLibrary}>
+              {loadingLibrary ? "Scanning…" : "Rescan"}
+            </button>
+          </div>
+        )}
+
         <div className="settings-row">
           <div>
             <div className="settings-row-label">Albums loaded</div>
@@ -125,6 +144,17 @@ export default function Settings() {
           <div className="settings-row-value">{albums?.length || 0}</div>
         </div>
       </div>
+
+      {isNative && (
+        <div>
+          <div className="settings-group-title">Background Playback</div>
+          <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+            <div className="settings-row-label">If playback keeps stopping when the screen turns off</div>
+            <div className="settings-row-sub">{BACKGROUND_PLAYBACK_GUIDANCE.primary}</div>
+            <div className="settings-row-sub">{BACKGROUND_PLAYBACK_GUIDANCE.secondary}</div>
+          </div>
+        </div>
+      )}
 
       <div>
         <div className="settings-group-title">Appearance</div>
