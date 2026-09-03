@@ -30,6 +30,7 @@ import { recordListen } from "../utils/listeningStats";
 import { loadFont } from "../utils/fonts";
 import { MediaSession } from "@capgo/capacitor-media-session";
 import { NoisyAudio } from "../utils/noisyAudio";
+import { AudioFocus } from "../utils/audioFocus";
 import { armBackgroundWatchdog, checkAndClearBackgroundKillMarker } from "../utils/backgroundPlaybackWatchdog";
 
 const PlayerStateContext = createContext(null);
@@ -438,6 +439,11 @@ export function PlayerProvider({ children }) {
   // a chance to hydrate whatever was actually saved last session — without
   // this, that first render's default would overwrite the real save.
   const playlistsHydratedRef = useRef(false);
+  // Set by the audio-focus-change listener effect when it pauses playback
+  // for a focus loss, so the matching AUDIOFOCUS_GAIN only resumes if
+  // uPod itself did the pausing — never overriding a deliberate user
+  // pause that happened to land while focus was also lost.
+  const pausedByFocusLossRef = useRef(false);
 
   if (!audioRef.current && typeof Audio !== "undefined") {
     audioRef.current = new Audio();
@@ -866,6 +872,53 @@ export function PlayerProvider({ children }) {
       if (killed) dispatch({ type: "SET_BACKGROUND_KILL_NOTICE", value: true });
     });
     return armBackgroundWatchdog(playingRef);
+  }, []);
+
+  // Requests Android audio focus whenever playback starts, abandons it
+  // when the user pauses — kept separate from the focus-change listener
+  // effect below so each half of this can be reasoned about on its own.
+  // Skips abandoning on a pause the listener effect itself triggered
+  // (pausedByFocusLossRef) — for a transient loss we're still registered
+  // and waiting for the eventual AUDIOFOCUS_GAIN; abandoning here would
+  // drop that registration early.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (state.playing) {
+      AudioFocus.requestFocus().catch(() => {});
+    } else if (!pausedByFocusLossRef.current) {
+      AudioFocus.abandonFocus().catch(() => {});
+    }
+  }, [state.playing]);
+
+  // Reacts to Android taking focus away (a call, another app's media, a
+  // nav-prompt) or giving it back — see AudioFocusPlugin.java. Permanent
+  // and transient loss both pause playback (simplest correct behavior;
+  // Android doesn't require resuming after a *permanent* loss at all, and
+  // treating transient the same avoids playing quietly under something
+  // that expects to have the room, e.g. a voice assistant reply). Only a
+  // duck (a brief, low-priority sound) lowers volume instead of pausing.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const handle = AudioFocus.addListener("focuschange", ({ type }) => {
+      const audio = audioRef.current;
+      if (type === "loss" || type === "lossTransient") {
+        if (playingRef.current) {
+          pausedByFocusLossRef.current = true;
+          actionsRef.current.pause();
+        }
+      } else if (type === "duck") {
+        if (audio) audio.volume = 0.2;
+      } else if (type === "gain") {
+        if (audio) audio.volume = 1;
+        if (pausedByFocusLossRef.current) {
+          pausedByFocusLossRef.current = false;
+          actionsRef.current.play();
+        }
+      }
+    });
+    return () => {
+      handle.then((h) => h.remove());
+    };
   }, []);
 
   const playAlbumFromTrack = useCallback(
