@@ -468,11 +468,18 @@ export function PlayerProvider({ children }) {
     l.pendingSeconds = 0;
   }
 
+  // Deliberately keyed on the current track's identity, NOT on
+  // state.queue — appending to the queue (addToQueue) or splicing a track
+  // in just after it (playNext) produces a new queue array reference
+  // without changing which track is at queueIndex, and reassigning
+  // audio.src (even to the same resolved URL) always restarts playback
+  // from 0. Keying on the track itself means those queue-array-only
+  // changes don't touch this effect at all. Prefetch/cleanup, which do
+  // need to see every queue change, live in the effect below instead.
+  const currentTrack = state.queue[state.queueIndex];
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio) return;
-    const track = state.queue[state.queueIndex];
-    if (!track) return;
+    if (!audio || !currentTrack) return;
 
     // Flush whatever we'd accumulated for the previous track before
     // switching, then start a fresh accounting window for this one — plus
@@ -480,17 +487,17 @@ export function PlayerProvider({ children }) {
     // lifetime/recently-played stats even if it's skipped almost
     // immediately.
     flushListen();
-    listenRef.current = { trackId: track.id, lastTime: 0, pendingSeconds: 0 };
-    if (state.playing) recordListen(track.id, 1);
+    listenRef.current = { trackId: currentTrack.id, lastTime: 0, pendingSeconds: 0 };
+    if (state.playing) recordListen(currentTrack.id, 1);
 
     loadTokenRef.current += 1;
     const token = loadTokenRef.current;
-    getTrackObjectUrl(track).then((url) => {
+    getTrackObjectUrl(currentTrack).then((url) => {
       if (token !== loadTokenRef.current) return; // superseded by a later track change
       if (!url) {
         dispatch({
           type: "SET_QUEUE_TOAST",
-          message: `Couldn't play "${track.title}" — the file may be missing or unreadable.`,
+          message: `Couldn't play "${currentTrack.title}" — the file may be missing or unreadable.`,
         });
         return;
       }
@@ -501,6 +508,14 @@ export function PlayerProvider({ children }) {
         audio.play().catch(() => {});
       }
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTrack]);
+
+  // Prefetch/cleanup only — safe to re-run on every queue change (unlike
+  // the effect above) since it never touches audio.src.
+  useEffect(() => {
+    const track = state.queue[state.queueIndex];
+    if (!track) return;
 
     // Prefetch the next couple of tracks so a native track's lazy
     // full-file read (a native-bridge round trip) has already finished by
