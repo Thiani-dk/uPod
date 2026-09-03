@@ -32,6 +32,7 @@ import { MediaSession } from "@capgo/capacitor-media-session";
 import { NoisyAudio } from "../utils/noisyAudio";
 import { AudioFocus } from "../utils/audioFocus";
 import { ensureNotificationPermission } from "../utils/notificationPermission";
+import { PlaybackWakeLock } from "../utils/playbackWakeLock";
 import { armBackgroundWatchdog, checkAndClearBackgroundKillMarker } from "../utils/backgroundPlaybackWatchdog";
 
 const PlayerStateContext = createContext(null);
@@ -926,6 +927,28 @@ export function PlayerProvider({ children }) {
       handle.then((h) => h.remove());
     };
   }, []);
+
+  // Holds a partial wake lock for as long as state.playing is true — see
+  // PlaybackWakeLockPlugin.java for why. Acquiring is unconditional (not
+  // gated on "am I already holding it") since re-acquiring an
+  // already-held timed lock just refreshes its timeout.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (state.playing) {
+      PlaybackWakeLock.acquire().catch(() => {});
+    } else {
+      PlaybackWakeLock.release().catch(() => {});
+    }
+  }, [state.playing]);
+
+  // Refreshes the same wake lock's timeout on every track change too —
+  // otherwise one continuous playback session longer than the lock's
+  // safety timeout (see PlaybackWakeLockPlugin.java) would let the CPU
+  // suspend mid-track even though playback never actually paused.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform() || !state.playing) return;
+    PlaybackWakeLock.acquire().catch(() => {});
+  }, [currentTrack, state.playing]);
 
   const playAlbumFromTrack = useCallback(
     (album, track) => {

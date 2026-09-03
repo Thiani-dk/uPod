@@ -57,6 +57,13 @@
          src/utils/notificationPermission.js. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Held only while state.playing is true (PlaybackWakeLockPlugin),
+         as cheap insurance against the CPU suspending mid-decode with the
+         screen off — mirrors ExoPlayer's C.WAKE_MODE_LOCAL in mature
+         native players, regardless of whether Chromium's own WebView
+         media pipeline already handles this adequately on its own. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- Declared so "All files access" appears as a manual toggle in
