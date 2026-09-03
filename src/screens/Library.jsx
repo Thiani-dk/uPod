@@ -19,7 +19,7 @@ const TABS = [
 
 export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
   const { albums, playlists, library, selectedFolderName, loadingLibrary, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
-  const { pickFolder, pickNativeFolder, playAlbumFromTrack, addTrackToPlaylist, removeTrackFromPlaylist } = usePlayerActions();
+  const { pickFolder, pickNativeFolder, playTrackListFrom, addTrackToPlaylist, removeTrackFromPlaylist } = usePlayerActions();
   const [tab, setTab] = useState("playnow");
   const [query, setQuery] = useState("");
   // Deliberately separate from `query` above — that one drives each tab's
@@ -61,9 +61,12 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
     }
   }
 
+  // Tapping a track here queues the whole visible Tracks list (respecting
+  // an active unified search), not just its album — that's Album/Playlist
+  // detail's job via playAlbumFromTrack/playPlaylist, left untouched.
   function playSong(track) {
-    const album = albums.find((a) => a.tracks.some((t) => t.id === track.id));
-    if (album) playAlbumFromTrack(album, track);
+    const visibleTracks = searching ? searchResults.tracks : library;
+    playTrackListFrom(visibleTracks, track);
   }
 
   function filterByArtist(artist) {
