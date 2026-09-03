@@ -270,3 +270,38 @@ export async function loadCoverOverrides() {
     db?.close();
   }
 }
+
+// Playlists (including the built-in Favourite Tunes) live only in React
+// state otherwise — a full process kill from the recent-apps switcher (not
+// just backgrounding) wipes them entirely, since nothing ever wrote them
+// anywhere. Stored under the existing META_STORE, keyed like "info" is, so
+// this doesn't need a new object store or a DB version bump.
+export async function savePlaylists(playlists) {
+  const db = await openDb();
+  try {
+    const tx = db.transaction(META_STORE, "readwrite");
+    tx.objectStore(META_STORE).put({ key: "playlists", playlists });
+    await txDone(tx);
+  } finally {
+    db.close();
+  }
+}
+
+// Returns the persisted playlists array, or null if nothing's been saved
+// yet (first-ever launch). Never throws — a failure here should just mean
+// falling back to the default Favourite Tunes-only state, not block startup.
+export async function loadPlaylists() {
+  if (typeof indexedDB === "undefined") return null;
+  let db;
+  try {
+    db = await openDb();
+    const record = await promisifyRequest(
+      db.transaction(META_STORE, "readonly").objectStore(META_STORE).get("playlists")
+    );
+    return record?.playlists || null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}

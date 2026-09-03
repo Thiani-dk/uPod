@@ -17,6 +17,8 @@ import {
   saveCoverOverride as persistCoverOverride,
   clearCoverOverride as removePersistedCoverOverride,
   loadCoverOverrides,
+  savePlaylists as persistPlaylists,
+  loadPlaylists as loadCachedPlaylists,
 } from "../audio/libraryCache";
 import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
 import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffects";
@@ -323,6 +325,11 @@ function reducer(state, action) {
         ...state,
         playlists: state.playlists.map((p) => (p.id === action.id ? { ...p, name: action.name } : p)),
       };
+    // Applied once on native launch, after hydrating from IndexedDB —
+    // replaces the default Favourite-Tunes-only playlists with whatever
+    // was actually saved last session.
+    case "SET_PLAYLISTS":
+      return { ...state, playlists: action.playlists };
     case "SET_TRACK_ORDER_STATUS":
       return { ...state, trackOrderStatus: action.status };
     case "APPLY_TRACK_ORDER": {
@@ -426,6 +433,11 @@ export function PlayerProvider({ children }) {
   // fresh value the normal way).
   const playingRef = useRef(false);
   playingRef.current = state.playing;
+  // Guards the playlists-persist effect below against firing with the
+  // still-default initialState.playlists before the launch effect has had
+  // a chance to hydrate whatever was actually saved last session — without
+  // this, that first render's default would overwrite the real save.
+  const playlistsHydratedRef = useRef(false);
 
   if (!audioRef.current && typeof Audio !== "undefined") {
     audioRef.current = new Audio();
@@ -801,6 +813,19 @@ export function PlayerProvider({ children }) {
       }
       dispatch({ type: "SET_COVER_OVERRIDES", overrides });
 
+      // Same idea for playlists (including Favourite Tunes) — they only
+      // ever lived in React state before, so a full process kill (not just
+      // backgrounding) wiped them. Must also land before the cache-hydration
+      // early-return below, and playlistsHydratedRef must be set regardless
+      // of which branch that takes, so the persist effect further down
+      // knows it's safe to start saving instead of clobbering this with the
+      // still-default initialState.playlists.
+      const savedPlaylists = await loadCachedPlaylists();
+      if (savedPlaylists && savedPlaylists.length > 0) {
+        dispatch({ type: "SET_PLAYLISTS", playlists: savedPlaylists });
+      }
+      playlistsHydratedRef.current = true;
+
       const cached = await loadCachedLibrary();
       if (cached && cached.tracks.length > 0) {
         dispatch({ type: "LOAD_LIBRARY", tracks: cached.tracks, folderName: cached.folderPath });
@@ -817,6 +842,20 @@ export function PlayerProvider({ children }) {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Persists every playlist mutation (add/remove/rename/create-from-effect/
+  // save-queue-as-playlist, and toggling a Favourite) so a force-close from
+  // the recent-apps switcher no longer wipes them. Gated on
+  // playlistsHydratedRef so this can't fire with the still-default
+  // initialState.playlists before the launch effect above has loaded
+  // whatever was actually saved.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (!playlistsHydratedRef.current) return;
+    persistPlaylists(state.playlists).catch((err) => {
+      console.warn("Couldn't persist playlists:", err);
+    });
+  }, [state.playlists]);
 
   // Background-kill detection (see backgroundPlaybackWatchdog.js) —
   // checks whether the previous session looks like it was killed by the
