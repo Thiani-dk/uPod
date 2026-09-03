@@ -19,6 +19,8 @@ import {
   loadCoverOverrides,
   savePlaylists as persistPlaylists,
   loadPlaylists as loadCachedPlaylists,
+  savePlaybackState as persistPlaybackState,
+  loadPlaybackState as loadCachedPlaybackState,
 } from "../audio/libraryCache";
 import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
 import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffects";
@@ -386,6 +388,20 @@ function reducer(state, action) {
       });
       return { ...state, coverOverrides, library, albums: groupIntoAlbums(library) };
     }
+    // Restores a queue/position saved by a previous session (see
+    // savePlaybackState in libraryCache.js) — resolved against
+    // state.library (already updated by the LOAD_LIBRARY dispatched just
+    // before this one) rather than whatever the launch effect's stale
+    // closure captured, and silently drops any track that no longer
+    // resolves (deleted/renamed since the save), same as playlist
+    // restoration already does. Deliberately leaves `playing` false —
+    // this restores where the user left off, not autoplay.
+    case "RESTORE_PLAYBACK_STATE": {
+      const queue = action.trackIds.map((id) => state.library.find((t) => t.id === id)).filter(Boolean);
+      if (queue.length === 0) return state;
+      const queueIndex = Math.min(Math.max(action.index, 0), queue.length - 1);
+      return { ...state, queue, queueIndex, currentTime: action.position || 0 };
+    }
     case "UPDATE_TRACK_METADATA": {
       const { trackId, updates } = action;
       const library = state.library.map((t) => {
@@ -441,6 +457,10 @@ export function PlayerProvider({ children }) {
   // a chance to hydrate whatever was actually saved last session — without
   // this, that first render's default would overwrite the real save.
   const playlistsHydratedRef = useRef(false);
+  // A restored position (see RESTORE_PLAYBACK_STATE) waiting to be applied
+  // to the real <audio> element once its metadata has actually loaded —
+  // setting .currentTime any earlier is unreliable across browsers/WebViews.
+  const pendingSeekRef = useRef(null);
   // Set by the audio-focus-change listener effect when it pauses playback
   // for a focus loss, so the matching AUDIOFOCUS_GAIN only resumes if
   // uPod itself did the pausing — never overriding a deliberate user
@@ -599,7 +619,13 @@ export function PlayerProvider({ children }) {
         }).catch(() => {});
       }
     };
-    const onLoaded = () => dispatch({ type: "SET_DURATION", duration: audio.duration || 0 });
+    const onLoaded = () => {
+      dispatch({ type: "SET_DURATION", duration: audio.duration || 0 });
+      if (pendingSeekRef.current != null) {
+        audio.currentTime = pendingSeekRef.current;
+        pendingSeekRef.current = null;
+      }
+    };
     const onEnded = () => actions.next();
     // The state.playing effect drives audio.play()/pause() one-way, but
     // the browser can also pause/resume on its own — audio focus loss
@@ -842,6 +868,24 @@ export function PlayerProvider({ children }) {
       const cached = await loadCachedLibrary();
       if (cached && cached.tracks.length > 0) {
         dispatch({ type: "LOAD_LIBRARY", tracks: cached.tracks, folderName: cached.folderPath });
+
+        // Restore whatever queue/position the previous session left off
+        // at — dispatched after LOAD_LIBRARY (not before) so the reducer
+        // resolves trackIds against the now-current state.library. Only
+        // meaningful when there's an actual cached library to resolve
+        // against, so this is skipped on the fresh-scan paths below.
+        const savedPlayback = await loadCachedPlaybackState();
+        if (savedPlayback && savedPlayback.trackIds?.length > 0) {
+          // Small positions aren't worth a seek — avoids a pointless
+          // audio.currentTime write for a track that had barely started.
+          pendingSeekRef.current = savedPlayback.position > 2 ? savedPlayback.position : null;
+          dispatch({
+            type: "RESTORE_PLAYBACK_STATE",
+            trackIds: savedPlayback.trackIds,
+            index: savedPlayback.index || 0,
+            position: savedPlayback.position || 0,
+          });
+        }
         return;
       }
 
@@ -949,6 +993,30 @@ export function PlayerProvider({ children }) {
     if (!Capacitor.isNativePlatform() || !state.playing) return;
     PlaybackWakeLock.acquire().catch(() => {});
   }, [currentTrack, state.playing]);
+
+  // Periodic + event-driven playback-state persistence — same shape as
+  // Auxio's own approach (event-driven saves on meaningful changes, plus
+  // a periodic backup while actively playing) rather than saving on every
+  // single timeupdate tick, which would hammer IndexedDB for no benefit.
+  // Saves immediately on any queue/track/play-state change (covers "save
+  // on pause" for free, since state.playing flipping false is itself a
+  // change), then every 20s while playing to bound how much position
+  // accuracy a mid-track kill could lose.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (state.queue.length === 0) return;
+    const save = () => {
+      persistPlaybackState({
+        trackIds: state.queue.map((t) => t.id),
+        index: state.queueIndex,
+        position: audioRef.current?.currentTime || 0,
+      }).catch(() => {});
+    };
+    save();
+    if (!state.playing) return;
+    const interval = setInterval(save, 20000);
+    return () => clearInterval(interval);
+  }, [state.queue, state.queueIndex, state.playing]);
 
   const playAlbumFromTrack = useCallback(
     (album, track) => {

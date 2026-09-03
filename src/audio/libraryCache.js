@@ -305,3 +305,42 @@ export async function loadPlaylists() {
     db?.close();
   }
 }
+
+// The live queue/position only ever lived in React state — a kill that
+// misses the graceful-shutdown path (the exact ColorOS scenario
+// backgroundPlaybackWatchdog.js exists for) loses it completely, leaving
+// the user to re-find and re-queue whatever they were listening to. Saved
+// as track ids (not full track objects — those carry blob: cover URLs and
+// other per-session data that wouldn't survive a relaunch anyway) so
+// restoring just needs to look them up against the freshly-hydrated
+// library, the same way a playlist's trackIds already do.
+export async function savePlaybackState({ trackIds, index, position }) {
+  const db = await openDb();
+  try {
+    const tx = db.transaction(META_STORE, "readwrite");
+    tx.objectStore(META_STORE).put({ key: "playbackState", trackIds, index, position });
+    await txDone(tx);
+  } finally {
+    db.close();
+  }
+}
+
+// Returns { trackIds, index, position }, or null if nothing's been saved
+// yet. Never throws — a failure here should just mean launching with an
+// empty queue, not block startup.
+export async function loadPlaybackState() {
+  if (typeof indexedDB === "undefined") return null;
+  let db;
+  try {
+    db = await openDb();
+    const record = await promisifyRequest(
+      db.transaction(META_STORE, "readonly").objectStore(META_STORE).get("playbackState")
+    );
+    if (!record) return null;
+    return { trackIds: record.trackIds, index: record.index, position: record.position };
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
