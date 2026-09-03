@@ -8,6 +8,7 @@
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Preferences } from "@capacitor/preferences";
 import { isAudioFile, isVoiceNote, parseNativeTrackDescriptor } from "./metadata";
+import { AllFilesAccess } from "../utils/allFilesAccess";
 
 // Every music path is confined under this root — scanning stays limited
 // to the Downloads folder tree, never the whole device.
@@ -101,7 +102,21 @@ export async function markFolderConfirmedOnce() {
 
 // Requests the runtime storage permission if it hasn't been granted yet.
 // Returns true if we can proceed, false if the user denied it.
+// On API 30+, "All files access" (MANAGE_EXTERNAL_STORAGE) is what
+// actually governs whether scanNativeFolder() can read an arbitrary
+// user-chosen shared-storage folder — @capacitor/filesystem's
+// "publicStorage" alias only requests READ/WRITE_EXTERNAL_STORAGE
+// (confirmed by reading its own plugin source), which scoped storage
+// mostly ignores for this on modern Android. Checking that alias alone
+// let this report "granted" on a fresh install/reinstall where the real
+// permission was never given, producing a silent empty library. Below
+// API 30 the concept doesn't exist at all (AllFilesAccess.check() reports
+// that via `applicable: false`), so the legacy runtime-permission dialog
+// below is what actually governs access there instead.
 export async function ensureStoragePermission() {
+  const { granted, applicable } = await AllFilesAccess.check();
+  if (applicable) return granted;
+
   const status = await Filesystem.checkPermissions();
   if (status.publicStorage === "granted") return true;
   const requested = await Filesystem.requestPermissions();
@@ -212,4 +227,21 @@ export async function readNativeTrackObjectUrl({ folderPath, relativePath }) {
   });
   const blob = base64ToBlob(readResult.data, mimeForExt(ext));
   return URL.createObjectURL(blob);
+}
+
+// Permanently deletes a track's file from device storage. Filesystem's
+// deleteFile() rejects on failure (permission denied, already gone, etc.)
+// rather than silently no-op'ing, so callers can tell a real success from
+// a failure and must not touch app state until this resolves.
+export async function deleteNativeTrack({ folderPath, relativePath }) {
+  const granted = await ensureStoragePermission();
+  if (!granted) {
+    throw new Error(
+      "Storage permission was denied. Enable it via Settings → Apps → uPod → Permissions, then try again."
+    );
+  }
+  await Filesystem.deleteFile({
+    path: `${folderPath}/${relativePath}`,
+    directory: Directory.ExternalStorage,
+  });
 }

@@ -6,6 +6,7 @@ import { Capacitor } from "@capacitor/core";
 import {
   scanNativeFolder,
   readNativeTrackObjectUrl,
+  deleteNativeTrack,
   ensureStoragePermission,
   getMusicFolderPath,
   hasConfirmedFolderOnce,
@@ -33,8 +34,8 @@ import { loadFont } from "../utils/fonts";
 import { MediaSession } from "@capgo/capacitor-media-session";
 import { NoisyAudio } from "../utils/noisyAudio";
 import { AudioFocus } from "../utils/audioFocus";
-import { ensureNotificationPermission } from "../utils/notificationPermission";
 import { PlaybackWakeLock } from "../utils/playbackWakeLock";
+import { ensureNotificationPermission } from "../utils/notificationPermission";
 import { armBackgroundWatchdog, checkAndClearBackgroundKillMarker } from "../utils/backgroundPlaybackWatchdog";
 
 const PlayerStateContext = createContext(null);
@@ -50,6 +51,14 @@ const PlayerTimeContext = createContext(null);
 
 export const FAVORITES_PLAYLIST_ID = "pl-favorites";
 export const SPEED_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5];
+
+// Playlist cover overrides live in the same coverOverrides map/IndexedDB
+// store as album cover overrides (see SET_ALBUM_COVER_OVERRIDE) — this
+// prefix just keeps a playlist id from ever colliding with an album key
+// (a normalized album title, or "single::<trackId>").
+export function playlistCoverKey(playlistId) {
+  return `playlist:${playlistId}`;
+}
 
 const initialState = {
   library: [],
@@ -388,6 +397,50 @@ function reducer(state, action) {
       });
       return { ...state, coverOverrides, library, albums: groupIntoAlbums(library) };
     }
+    // Playlists have no embedded "original" art to fall back to (unlike
+    // albums), so there's no CLEAR_ALBUM_COVER_OVERRIDE-style rewrite of
+    // state.library here — just the override map itself.
+    case "SET_PLAYLIST_COVER_OVERRIDE": {
+      const coverOverrides = { ...state.coverOverrides, [playlistCoverKey(action.playlistId)]: action.cover };
+      return { ...state, coverOverrides };
+    }
+    case "CLEAR_PLAYLIST_COVER_OVERRIDE": {
+      const coverOverrides = { ...state.coverOverrides };
+      delete coverOverrides[playlistCoverKey(action.playlistId)];
+      return { ...state, coverOverrides };
+    }
+    // Permanent delete (see actions.deleteTrack) — by the time this
+    // dispatches, the real file is already gone from disk, so this just
+    // scrubs every place the track could still be referenced in memory:
+    // the library/albums (groupIntoAlbums naturally drops an album that
+    // has no tracks left), every playlist's trackIds (Favourites
+    // included), and the queue (adjusting queueIndex for whatever was
+    // removed ahead of it, same idea as REMOVE_QUEUE_ITEM).
+    case "DELETE_TRACK": {
+      const { trackId } = action;
+      const library = state.library.filter((t) => t.id !== trackId);
+      const albums = groupIntoAlbums(library);
+      const playlists = state.playlists.map((p) =>
+        p.trackIds.includes(trackId) ? { ...p, trackIds: p.trackIds.filter((id) => id !== trackId) } : p
+      );
+      const wasCurrent = state.queue[state.queueIndex]?.id === trackId;
+      const removedBeforeCurrent = state.queue
+        .slice(0, state.queueIndex)
+        .filter((t) => t.id === trackId).length;
+      const queue = state.queue.filter((t) => t.id !== trackId);
+      let queueIndex = state.queueIndex - removedBeforeCurrent;
+      if (queueIndex >= queue.length) queueIndex = Math.max(0, queue.length - 1);
+      return {
+        ...state,
+        library,
+        albums,
+        playlists,
+        queue,
+        queueIndex,
+        playing: queue.length === 0 ? false : state.playing,
+        currentTime: wasCurrent ? 0 : state.currentTime,
+      };
+    }
     // Restores a queue/position saved by a previous session (see
     // savePlaybackState in libraryCache.js) — resolved against
     // state.library (already updated by the LOAD_LIBRARY dispatched just
@@ -457,15 +510,15 @@ export function PlayerProvider({ children }) {
   // a chance to hydrate whatever was actually saved last session — without
   // this, that first render's default would overwrite the real save.
   const playlistsHydratedRef = useRef(false);
-  // A restored position (see RESTORE_PLAYBACK_STATE) waiting to be applied
-  // to the real <audio> element once its metadata has actually loaded —
-  // setting .currentTime any earlier is unreliable across browsers/WebViews.
-  const pendingSeekRef = useRef(null);
   // Set by the audio-focus-change listener effect when it pauses playback
   // for a focus loss, so the matching AUDIOFOCUS_GAIN only resumes if
   // uPod itself did the pausing — never overriding a deliberate user
   // pause that happened to land while focus was also lost.
   const pausedByFocusLossRef = useRef(false);
+  // A restored position (see RESTORE_PLAYBACK_STATE) waiting to be applied
+  // to the real <audio> element once its metadata has actually loaded —
+  // setting .currentTime any earlier is unreliable across browsers/WebViews.
+  const pendingSeekRef = useRef(null);
 
   if (!audioRef.current && typeof Audio !== "undefined") {
     audioRef.current = new Audio();
@@ -822,80 +875,93 @@ export function PlayerProvider({ children }) {
     }
   }, []);
 
-  // On launch: request storage permission (needed for the lazy per-track
-  // reads playback does later, regardless of cache state), then try to
-  // hydrate straight from the IndexedDB cache — no filesystem scanning at
-  // all when that hits. A real scan only happens if there's no cache yet:
-  // either a first-ever run (surfaced via pendingFolderConfirm, waiting
-  // for one explicit tap) or a folder that was confirmed in a previous
+  // Hydrates straight from the IndexedDB cache when there's one — no
+  // filesystem scanning at all in that case. A real scan only happens if
+  // there's no cache yet: either a first-ever run (surfaced via
+  // pendingFolderConfirm, waiting for one explicit tap — see
+  // WelcomeOnboarding.jsx) or a folder that was confirmed in a previous
   // session but somehow has no cached library (e.g. cache was cleared).
+  // Assumes the caller has already confirmed storage permission is
+  // granted — called both from the mount effect below and, on a fresh
+  // install/reinstall where permission wasn't granted yet at mount time,
+  // from WelcomeOnboarding once the user grants it and returns to the app.
+  const initializeLibrary = useCallback(async () => {
+    // Fire-and-forget — unrelated to library hydration/scanning below,
+    // and a denial should just mean no notification, not a stalled
+    // launch. See NotificationPermissionPlugin.java for why this exists.
+    ensureNotificationPermission();
+
+    // Load persisted cover overrides before anything else touches
+    // state.library — both the cache-hydration and the scan paths below
+    // dispatch LOAD_LIBRARY, which reapplies whatever's in
+    // state.coverOverrides, so this must land first or a user's chosen
+    // cover would flash the embedded one on this launch.
+    const overrideRecords = await loadCoverOverrides();
+    const overrides = {};
+    for (const o of overrideRecords) {
+      overrides[o.albumId] = coverObjectUrlFromBytes(o.coverBytes, o.coverFormat);
+    }
+    dispatch({ type: "SET_COVER_OVERRIDES", overrides });
+
+    // Same idea for playlists (including Favourite Tunes) — they only
+    // ever lived in React state before, so a full process kill (not just
+    // backgrounding) wiped them. Must also land before the cache-hydration
+    // early-return below, and playlistsHydratedRef must be set regardless
+    // of which branch that takes, so the persist effect further down
+    // knows it's safe to start saving instead of clobbering this with the
+    // still-default initialState.playlists.
+    const savedPlaylists = await loadCachedPlaylists();
+    if (savedPlaylists && savedPlaylists.length > 0) {
+      dispatch({ type: "SET_PLAYLISTS", playlists: savedPlaylists });
+    }
+    playlistsHydratedRef.current = true;
+
+    const cached = await loadCachedLibrary();
+    if (cached && cached.tracks.length > 0) {
+      dispatch({ type: "LOAD_LIBRARY", tracks: cached.tracks, folderName: cached.folderPath });
+
+      // Restore whatever queue/position the previous session left off
+      // at — dispatched after LOAD_LIBRARY (not before) so the reducer
+      // resolves trackIds against the now-current state.library. Only
+      // meaningful when there's an actual cached library to resolve
+      // against, so this is skipped on the fresh-scan paths below.
+      const savedPlayback = await loadCachedPlaybackState();
+      if (savedPlayback && savedPlayback.trackIds?.length > 0) {
+        // Small positions aren't worth a seek — avoids a pointless
+        // audio.currentTime write for a track that had barely started.
+        pendingSeekRef.current = savedPlayback.position > 2 ? savedPlayback.position : null;
+        dispatch({
+          type: "RESTORE_PLAYBACK_STATE",
+          trackIds: savedPlayback.trackIds,
+          index: savedPlayback.index || 0,
+          position: savedPlayback.position || 0,
+        });
+      }
+      return;
+    }
+
+    const confirmed = await hasConfirmedFolderOnce();
+    if (confirmed) {
+      pickNativeFolder();
+    } else {
+      const path = await getMusicFolderPath();
+      dispatch({ type: "SET_PENDING_FOLDER_CONFIRM", path });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickNativeFolder]);
+
+  // On launch: request storage permission (needed for the lazy per-track
+  // reads playback does later, regardless of cache state). If it's not
+  // granted yet (fresh install/reinstall — see WelcomeOnboarding.jsx),
+  // this deliberately does nothing further: the onboarding screen is
+  // what's showing in that case, and it calls initializeLibrary itself
+  // once the user grants access and returns to the app.
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     (async () => {
       const granted = await ensureStoragePermission();
       if (!granted) return;
-
-      // Fire-and-forget — unrelated to library hydration/scanning below,
-      // and a denial should just mean no notification, not a stalled
-      // launch. See NotificationPermissionPlugin.java for why this exists.
-      ensureNotificationPermission();
-
-      // Load persisted cover overrides before anything else touches
-      // state.library — both the cache-hydration and the scan paths below
-      // dispatch LOAD_LIBRARY, which reapplies whatever's in
-      // state.coverOverrides, so this must land first or a user's chosen
-      // cover would flash the embedded one on this launch.
-      const overrideRecords = await loadCoverOverrides();
-      const overrides = {};
-      for (const o of overrideRecords) {
-        overrides[o.albumId] = coverObjectUrlFromBytes(o.coverBytes, o.coverFormat);
-      }
-      dispatch({ type: "SET_COVER_OVERRIDES", overrides });
-
-      // Same idea for playlists (including Favourite Tunes) — they only
-      // ever lived in React state before, so a full process kill (not just
-      // backgrounding) wiped them. Must also land before the cache-hydration
-      // early-return below, and playlistsHydratedRef must be set regardless
-      // of which branch that takes, so the persist effect further down
-      // knows it's safe to start saving instead of clobbering this with the
-      // still-default initialState.playlists.
-      const savedPlaylists = await loadCachedPlaylists();
-      if (savedPlaylists && savedPlaylists.length > 0) {
-        dispatch({ type: "SET_PLAYLISTS", playlists: savedPlaylists });
-      }
-      playlistsHydratedRef.current = true;
-
-      const cached = await loadCachedLibrary();
-      if (cached && cached.tracks.length > 0) {
-        dispatch({ type: "LOAD_LIBRARY", tracks: cached.tracks, folderName: cached.folderPath });
-
-        // Restore whatever queue/position the previous session left off
-        // at — dispatched after LOAD_LIBRARY (not before) so the reducer
-        // resolves trackIds against the now-current state.library. Only
-        // meaningful when there's an actual cached library to resolve
-        // against, so this is skipped on the fresh-scan paths below.
-        const savedPlayback = await loadCachedPlaybackState();
-        if (savedPlayback && savedPlayback.trackIds?.length > 0) {
-          // Small positions aren't worth a seek — avoids a pointless
-          // audio.currentTime write for a track that had barely started.
-          pendingSeekRef.current = savedPlayback.position > 2 ? savedPlayback.position : null;
-          dispatch({
-            type: "RESTORE_PLAYBACK_STATE",
-            trackIds: savedPlayback.trackIds,
-            index: savedPlayback.index || 0,
-            position: savedPlayback.position || 0,
-          });
-        }
-        return;
-      }
-
-      const confirmed = await hasConfirmedFolderOnce();
-      if (confirmed) {
-        pickNativeFolder();
-      } else {
-        const path = await getMusicFolderPath();
-        dispatch({ type: "SET_PENDING_FOLDER_CONFIRM", path });
-      }
+      await initializeLibrary();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1080,6 +1146,11 @@ export function PlayerProvider({ children }) {
   const actions = {
     pickFolder,
     pickNativeFolder,
+    // Called by WelcomeOnboarding once the user grants storage access and
+    // returns to the app — kicks off the exact same hydrate-or-scan flow
+    // the mount effect runs, which never got to on a fresh install/
+    // reinstall where permission wasn't granted yet at mount time.
+    initializeLibrary,
     playAlbumFromTrack,
     playPlaylist,
     playTrackList,
@@ -1126,6 +1197,37 @@ export function PlayerProvider({ children }) {
     jumpToQueueIndex: (index) => dispatch({ type: "SET_INDEX", index }),
     addToQueue: (track) => dispatch({ type: "ADD_TO_QUEUE", track }),
     playNext: (track) => dispatch({ type: "PLAY_NEXT", track }),
+    // Permanent delete from device storage — native tracks only (there's
+    // no real on-device file to delete for a browser-picked or
+    // Studio-rendered track). Returns { ok, error } so the caller (a
+    // confirmation modal) can show a real failure instead of assuming
+    // success. Order matters: pause first so we're not deleting a file
+    // the audio element is actively decoding, then only touch any app
+    // state (in-memory or persisted) once the disk delete has actually
+    // succeeded.
+    deleteTrack: async (track) => {
+      const isCurrent = state.queue[state.queueIndex]?.id === track.id;
+      if (isCurrent && audioRef.current) {
+        audioRef.current.pause();
+      }
+      try {
+        await deleteNativeTrack({ folderPath: track.folderPath, relativePath: track.relativePath });
+      } catch (err) {
+        return {
+          ok: false,
+          error: err?.message || "The file may already be gone, or permission was denied.",
+        };
+      }
+      dispatch({ type: "DELETE_TRACK", trackId: track.id });
+      // Re-persist the library cache so the deleted track doesn't
+      // reappear on next launch without a rescan — playlists persist on
+      // their own via the effect that watches state.playlists.
+      const remainingTracks = state.library.filter((t) => t.id !== track.id);
+      saveCachedLibrary({ tracks: remainingTracks, folderPath: state.selectedFolderName }).catch((err) => {
+        console.warn("Couldn't persist library after delete:", err);
+      });
+      return { ok: true };
+    },
     addTrackToPlaylist: (playlistId, track) => dispatch({ type: "ADD_TRACK_TO_PLAYLIST", playlistId, track }),
     addTracksToPlaylist: (playlistId, tracks) => dispatch({ type: "ADD_TRACKS_TO_PLAYLIST", playlistId, tracks }),
     removeTrackFromPlaylist: (playlistId, trackId) => dispatch({ type: "REMOVE_TRACK_FROM_PLAYLIST", playlistId, trackId }),
@@ -1159,6 +1261,25 @@ export function PlayerProvider({ children }) {
       dispatch({ type: "CLEAR_ALBUM_COVER_OVERRIDE", albumId });
       removePersistedCoverOverride(albumId).catch((err) => {
         console.warn("Couldn't clear persisted cover override:", err);
+      });
+    },
+    // Same picker/persistence flow as setAlbumCoverOverride, keyed by
+    // playlistCoverKey(playlistId) instead of an album id so the two can
+    // share one IndexedDB store without colliding.
+    setPlaylistCoverOverride: (playlistId, bytes, format) => {
+      const cover = coverObjectUrlFromBytes(bytes, format);
+      dispatch({ type: "SET_PLAYLIST_COVER_OVERRIDE", playlistId, cover });
+      persistCoverOverride(playlistCoverKey(playlistId), bytes, format).catch((err) => {
+        console.warn("Couldn't persist playlist cover override:", err);
+      });
+    },
+    // "Remove custom cover" — playlists have no embedded original to fall
+    // back to, so this just drops the override (default placeholder shows
+    // instead), unlike clearAlbumCoverOverride's "reset to original".
+    clearPlaylistCoverOverride: (playlistId) => {
+      dispatch({ type: "CLEAR_PLAYLIST_COVER_OVERRIDE", playlistId });
+      removePersistedCoverOverride(playlistCoverKey(playlistId)).catch((err) => {
+        console.warn("Couldn't clear persisted playlist cover override:", err);
       });
     },
     setEqBand: (index, value) => {

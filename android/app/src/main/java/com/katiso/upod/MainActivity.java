@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AudioFocusPlugin.class);
         registerPlugin(NotificationPermissionPlugin.class);
         registerPlugin(PlaybackWakeLockPlugin.class);
+        registerPlugin(AllFilesAccessPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

@@ -1,11 +1,11 @@
 // src/components/Sidebar.jsx
 import React from "react";
 import { Disc3, Library, X, SlidersHorizontal, Wand2, Mic2, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
-import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
+import { usePlayerState, usePlayerActions, playlistCoverKey } from "../store/PlayerContext";
 import NoteMark from "./NoteMark";
 
 export default function Sidebar({ screen, setScreen, open, setOpen, onOpenPlaylist }) {
-  const { theme, playlists } = usePlayerState();
+  const { theme, playlists, coverOverrides } = usePlayerState();
   const { setTheme } = usePlayerActions();
 
   const nav = [
@@ -57,16 +57,23 @@ export default function Sidebar({ screen, setScreen, open, setOpen, onOpenPlayli
           <>
             <div className="sidebar-section-label">Playlists</div>
             <nav className="nav-list nav-list-scroll">
-              {playlists.map((p) => (
-                <button
-                  key={p.id}
-                  className="nav-item nav-item-playlist"
-                  onClick={() => { onOpenPlaylist(p); setOpen(false); }}
-                >
-                  <span className="nav-item-playlist-dot" />
-                  <span>{p.name}</span>
-                </button>
-              ))}
+              {playlists.map((p) => {
+                const cover = coverOverrides[playlistCoverKey(p.id)];
+                return (
+                  <button
+                    key={p.id}
+                    className="nav-item nav-item-playlist"
+                    onClick={() => { onOpenPlaylist(p); setOpen(false); }}
+                  >
+                    {cover ? (
+                      <span className="nav-item-playlist-cover" style={{ background: `url(${cover}) center/cover` }} />
+                    ) : (
+                      <span className="nav-item-playlist-dot" />
+                    )}
+                    <span>{p.name}</span>
+                  </button>
+                );
+              })}
             </nav>
           </>
         )}

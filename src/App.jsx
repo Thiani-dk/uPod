@@ -19,6 +19,8 @@ import PlaylistDetail from "./screens/PlaylistDetail";
 import InstantMix from "./screens/InstantMix";
 import Karaoke from "./screens/Karaoke";
 import Settings from "./screens/Settings";
+import WelcomeOnboarding from "./screens/WelcomeOnboarding";
+import { AllFilesAccess } from "./utils/allFilesAccess";
 import { getFontStack } from "./utils/fonts";
 
 // Where the hardware/gesture back button should land from each top-level
@@ -40,7 +42,12 @@ const SCREEN_BACK_TARGETS = {
 
 function Shell() {
   const { theme, accentColor, fontFamily, queue, queueIndex, albums, backgroundKillNotice } = usePlayerState();
-  const { dismissBackgroundKillNotice } = usePlayerActions();
+  const { dismissBackgroundKillNotice, initializeLibrary } = usePlayerActions();
+  // null while checking (avoids a flash of the wrong screen), then true
+  // only on a fresh install/reinstall where "All files access" hasn't
+  // been granted yet — see WelcomeOnboarding.jsx for why this can't just
+  // be a "have I shown this before" flag.
+  const [needsOnboarding, setNeedsOnboarding] = useState(null);
   const [screen, setScreen] = useState("library");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeAlbum, setActiveAlbum] = useState(null);
@@ -88,6 +95,25 @@ function Shell() {
     };
   }, []);
 
+  // One-time check on mount — PlayerContext's own launch effect already
+  // bails out silently if storage permission isn't granted (see
+  // initializeLibrary in PlayerContext.jsx), so this is what actually
+  // decides whether the onboarding screen or the real app shows.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) {
+      setNeedsOnboarding(false);
+      return;
+    }
+    AllFilesAccess.check().then(({ granted, applicable }) => {
+      setNeedsOnboarding(applicable && !granted);
+    });
+  }, []);
+
+  function handleAccessGranted() {
+    setNeedsOnboarding(false);
+    initializeLibrary();
+  }
+
   function openAlbum(album) {
     setActiveAlbum(album);
     setScreen("album");
@@ -102,9 +128,25 @@ function Shell() {
   }
 
   const rootClass = Capacitor.isNativePlatform() ? "upod-root native-platform" : "upod-root";
+  const rootStyle = { "--accent": accentColor, fontFamily: getFontStack(fontFamily) };
+
+  // needsOnboarding === null: still checking — render nothing rather than
+  // flash the (empty) library before potentially replacing it with
+  // onboarding a moment later.
+  if (needsOnboarding === null) {
+    return <div className={rootClass} data-theme={theme} style={rootStyle} />;
+  }
+
+  if (needsOnboarding) {
+    return (
+      <div className={rootClass} data-theme={theme} style={rootStyle}>
+        <WelcomeOnboarding onGranted={handleAccessGranted} />
+      </div>
+    );
+  }
 
   return (
-    <div className={rootClass} data-theme={theme} style={{ "--accent": accentColor, fontFamily: getFontStack(fontFamily) }}>
+    <div className={rootClass} data-theme={theme} style={rootStyle}>
       <div className="shell">
         <Sidebar
           screen={screen}

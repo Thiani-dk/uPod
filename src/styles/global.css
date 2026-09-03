@@ -161,6 +161,18 @@ html, body, #root { height: 100%; margin: 0; }
 }
 .brand-row { display: flex; align-items: center; gap: 10px; padding: 4px 6px 18px; }
 .brand-mark { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(155deg, var(--accent), color-mix(in srgb, var(--accent) 40%, #000)); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 45%, transparent); }
+
+/* ============================================================
+   First-run onboarding (WelcomeOnboarding.jsx) — gates the whole
+   shell until "All files access" is granted. Full-bleed, centered,
+   no sidebar/topbar chrome since there's nothing to navigate to yet.
+   ============================================================ */
+.onboarding-screen { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 32px 24px; gap: 14px; max-width: 420px; margin: 0 auto; }
+.onboarding-mark { width: 64px; height: 64px; border-radius: 18px; background: linear-gradient(155deg, var(--accent), color-mix(in srgb, var(--accent) 40%, #000)); display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 45%, transparent); margin-bottom: 6px; }
+.onboarding-title { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
+.onboarding-body { font-size: 13.5px; line-height: 1.5; color: var(--text-dim); margin: 0; }
+.onboarding-cta { margin-top: 10px; padding: 11px 20px; font-size: 13.5px; }
+.onboarding-note { font-size: 11.5px; line-height: 1.5; color: var(--text-dim); margin-top: 18px; padding: 12px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--border); }
 .brand-name { font-weight: 700; font-size: 15px; letter-spacing: -0.02em; }
 .brand-tag { font-size: 10.5px; color: var(--text-dim); }
 /* Sidebar close (X) — bare icon, no box. Muted at rest so it sits quietly
@@ -259,6 +271,20 @@ html, body, #root { height: 100%; margin: 0; }
 .tab-row { display: flex; gap: 6px; padding: 0 0 14px; }
 .tab-btn { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); color: var(--text-dim); font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .tab-btn.active { background: var(--accent); color: #fff; border-color: transparent; }
+/* Play Now is a primary destination, not a content filter like the other
+   three pills — so it stays filled with the accent at all times, active or
+   not, and carries a play glyph. Same accent-fill / #fff-on-accent pair
+   every other filled accent element uses, so it tracks the theme and the
+   dynamic per-track accent automatically. */
+.tab-btn-primary,
+.tab-btn-primary.active {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
 .album-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 16px; }
 .album-card { border: none; background: none; text-align: left; cursor: pointer; padding: 0; color: var(--text); }
 .album-cover { width: 100%; aspect-ratio: 1; border-radius: 16px; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow); margin-bottom: 8px; border: var(--glass-border-top); position: relative; overflow: hidden; }
@@ -304,6 +330,8 @@ html, body, #root { height: 100%; margin: 0; }
 .detail-actions { display: flex; align-items: center; gap: 8px; }
 .primary-btn { display: flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: 999px; border: none; background: var(--accent); color: #fff; font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .ghost-btn { padding: 9px 16px; border-radius: 999px; border: 1px solid var(--border); background: none; color: var(--text); font-size: 12.5px; cursor: pointer; }
+.danger-btn { display: flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: 999px; border: none; background: #e5484d; color: #fff; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.danger-btn:disabled { opacity: 0.5; cursor: default; }
 .track-order-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--border); margin-bottom: 14px; flex-wrap: wrap; }
 .track-list { display: flex; flex-direction: column; gap: 1px; }
 .track-row { display: flex; align-items: center; gap: 12px; padding: 9px 8px; border-radius: 9px; border: none; background: none; cursor: pointer; text-align: left; width: 100%; color: var(--text); }
@@ -668,6 +696,13 @@ html, body, #root { height: 100%; margin: 0; }
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
+  flex-shrink: 0;
+}
+
+.nav-item-playlist-cover {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
   flex-shrink: 0;
 }
 
@@ -1675,12 +1710,3 @@ html, body, #root { height: 100%; margin: 0; }
   .stat-mini-grid { grid-template-columns: repeat(2, 1fr); }
   .stat-hero-value { font-size: 28px; }
 }
-
-/* Secondary "filter this tab" bar sitting just below the persistent
-   unified search bar — lighter weight so the two don't read as equals. */
-.search-bar-tab {
-  margin-top: 0;
-  background: var(--panel);
-  box-shadow: none;
-}
-.search-bar-tab input { font-size: 12.5px; }

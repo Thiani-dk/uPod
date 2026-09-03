@@ -1,16 +1,36 @@
 // src/screens/PlaylistDetail.jsx
-import React, { useState } from "react";
-import { ChevronLeft, Play, Pencil, Check, Plus, Bookmark, FolderPlus } from "lucide-react";
-import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
+import React, { useRef, useState } from "react";
+import { ChevronLeft, Play, Pencil, Check, Plus, Bookmark, FolderPlus, ImagePlus, Trash2, Wand2 } from "lucide-react";
+import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID, playlistCoverKey } from "../store/PlayerContext";
 import AddToPlaylistModal from "../components/AddToPlaylistModal";
 
 export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
-  const { library, queue, queueIndex, playlists, queueToast } = usePlayerState();
-  const { playPlaylist, renamePlaylist, addToQueue, addTrackToPlaylist, removeTrackFromPlaylist } = usePlayerActions();
+  const { library, queue, queueIndex, playlists, coverOverrides, queueToast } = usePlayerState();
+  const {
+    playPlaylist,
+    renamePlaylist,
+    addToQueue,
+    addTrackToPlaylist,
+    removeTrackFromPlaylist,
+    setPlaylistCoverOverride,
+    clearPlaylistCoverOverride,
+  } = usePlayerActions();
   const playlist = playlists.find((p) => p.id === playlistProp.id) || playlistProp;
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(playlist.name);
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
+  const coverInputRef = useRef(null);
+  const cover = coverOverrides[playlistCoverKey(playlist.id)];
+
+  // In-app only, same as album cover overrides — persists via IndexedDB
+  // (see setPlaylistCoverOverride) so it survives a rescan/restart.
+  async function handleCoverFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    const buf = await file.arrayBuffer();
+    setPlaylistCoverOverride(playlist.id, new Uint8Array(buf), file.type || "image/jpeg");
+  }
 
   const favPlaylist = playlists.find((p) => p.id === FAVORITES_PLAYLIST_ID);
 
@@ -36,7 +56,39 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
       <button className="back-btn" onClick={onBack}><ChevronLeft size={16} /> Back</button>
 
       <div className="detail-header">
-        <div className="detail-cover" style={{ background: "var(--accent)" }} />
+        <div
+          className={`detail-cover ${cover ? "" : "cover-glass"}`}
+          style={{ position: "relative", ...(cover ? { background: `url(${cover}) center/cover` } : {}) }}
+        >
+          {!cover && <Wand2 size={48} style={{ color: "var(--accent)" }} />}
+          <input
+            ref={coverInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={handleCoverFile}
+          />
+          <button
+            className="icon-btn small"
+            onClick={() => coverInputRef.current.click()}
+            aria-label="Change playlist cover"
+            title="Change playlist cover"
+            style={{ position: "absolute", right: 6, bottom: 6 }}
+          >
+            <ImagePlus size={14} />
+          </button>
+          {cover && (
+            <button
+              className="icon-btn small"
+              onClick={() => clearPlaylistCoverOverride(playlist.id)}
+              aria-label="Remove custom cover"
+              title="Remove custom cover"
+              style={{ position: "absolute", left: 6, bottom: 6 }}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
         <div className="detail-info">
           <div className="detail-kicker">Studio Playlist</div>
           {editingName ? (

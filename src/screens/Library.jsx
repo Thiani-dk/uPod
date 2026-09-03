@@ -1,8 +1,8 @@
 // src/screens/Library.jsx
 import React, { useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Search, X, FolderOpen, Wand2, MoreVertical, Bookmark, FolderPlus, User } from "lucide-react";
-import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
+import { Search, X, FolderOpen, Wand2, MoreVertical, Bookmark, FolderPlus, User, Play } from "lucide-react";
+import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID, playlistCoverKey } from "../store/PlayerContext";
 import { useUnifiedSearch } from "../utils/search";
 import NoteMark from "../components/NoteMark";
 import PlayNow from "./PlayNow";
@@ -18,16 +18,15 @@ const TABS = [
 ];
 
 export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
-  const { albums, playlists, library, selectedFolderName, loadingLibrary, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
+  const { albums, playlists, library, coverOverrides, selectedFolderName, loadingLibrary, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
   const { pickFolder, pickNativeFolder, playTrackListFrom, addTrackToPlaylist, removeTrackFromPlaylist } = usePlayerActions();
   const [tab, setTab] = useState("playnow");
-  const [query, setQuery] = useState("");
-  // Deliberately separate from `query` above — that one drives each tab's
-  // own siloed filter (Albums search only matches albums, etc). This one
-  // powers the persistent top search bar, which spans the whole library at
-  // once (Artists/Albums/Playlists/Tracks) regardless of which tab pill is
-  // selected (see src/utils/search.js). While it has a value, its results
-  // replace whatever the current tab would otherwise render.
+  // The persistent top search bar is the ONLY search input on this screen.
+  // It spans the whole library (Artists/Albums/Playlists/Tracks) regardless
+  // of the selected tab pill (see src/utils/search.js); while it has a
+  // value its results replace whatever the current tab would render. There
+  // is deliberately no per-tab filter input — the tab lists always show
+  // their full contents.
   const [searchQuery, setSearchQuery] = useState("");
   const [menuTrack, setMenuTrack] = useState(null);
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
@@ -36,16 +35,6 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
 
   const searchResults = useUnifiedSearch(searchQuery);
   const searching = searchQuery.trim().length > 0;
-
-  const q = query.trim().toLowerCase();
-
-  const filteredAlbums = albums.filter(
-    (a) => !q || a.title.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)
-  );
-  const filteredPlaylists = playlists.filter((p) => !q || p.name.toLowerCase().includes(q));
-  const filteredSongs = library.filter(
-    (t) => !q || t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q)
-  );
 
   function handleFiles(e) {
     if (e.target.files && e.target.files.length > 0) {
@@ -70,11 +59,10 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   }
 
   function filterByArtist(artist) {
-    setTab("songs");
-    setQuery(artist);
-    // Landing on the Tracks tab filtered to this artist only makes sense
-    // if the unified results stop covering it.
-    setSearchQuery("");
+    // "Artist" (from a track's action menu or a search result) narrows via
+    // the one shared search bar now — its results include an Artists chip
+    // plus every matching album and track.
+    setSearchQuery(artist);
   }
 
   const favPlaylist = playlists.find((p) => p.id === FAVORITES_PLAYLIST_ID);
@@ -87,8 +75,21 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
     }
   }
 
-  const searchPlaceholder =
-    tab === "albums" ? "Search albums…" : tab === "playlists" ? "Search playlists…" : "Search tracks…";
+  // Editing a playlist's cover lives in PlaylistDetail (same as album
+  // covers only being editable in AlbumDetail) — rows here just reflect
+  // whatever override is already set, falling back to the plain Wand2
+  // placeholder otherwise.
+  function playlistThumb(p) {
+    const cover = coverOverrides[playlistCoverKey(p.id)];
+    return (
+      <div
+        className="playlist-thumb"
+        style={cover ? { background: `url(${cover}) center/cover` } : { background: "var(--accent)" }}
+      >
+        {!cover && <Wand2 size={16} color="#fff" />}
+      </div>
+    );
+  }
 
   return (
     <div className="lib-screen">
@@ -120,31 +121,14 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         )}
       </div>
 
-      {/* Per-tab filter — narrows just the current tab. Hidden while a
-          unified search is active (its results replace the tab anyway). */}
-      {!searching && tab !== "playnow" && (
-        <div className="search-bar search-bar-tab">
-          <Search size={16} />
-          <input
-            placeholder={searchPlaceholder}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          {query && (
-            <button className="icon-btn small" onClick={() => setQuery("")}>
-              <X size={14} />
-            </button>
-          )}
-        </div>
-      )}
-
       <div className="tab-row">
         {TABS.map((t) => (
           <button
             key={t.id}
-            className={`tab-btn ${tab === t.id ? "active" : ""}`}
+            className={`tab-btn ${t.id === "playnow" ? "tab-btn-primary" : ""} ${tab === t.id ? "active" : ""}`}
             onClick={() => setTab(t.id)}
           >
+            {t.id === "playnow" && <Play size={12} fill="currentColor" strokeWidth={0} />}
             {t.label}
           </button>
         ))}
@@ -246,9 +230,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
               <div className="playlist-list" style={{ marginBottom: 20 }}>
                 {searchResults.playlists.map((p) => (
                   <button key={p.id} className="playlist-row" onClick={() => onOpenPlaylist(p)}>
-                    <div className="playlist-thumb" style={{ background: "var(--accent)" }}>
-                      <Wand2 size={16} color="#fff" />
-                    </div>
+                    {playlistThumb(p)}
                     <div className="playlist-row-meta">
                       <div className="playlist-row-name">{p.name}</div>
                       <div className="playlist-row-count">{p.trackIds.length} tracks</div>
@@ -312,7 +294,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
 
       {albums.length > 0 && !searching && tab === "albums" && (
         <div className="album-grid">
-          {filteredAlbums.map((al) => (
+          {albums.map((al) => (
             <button key={al.id} className="album-card" onClick={() => onOpenAlbum(al)}>
               <div
                 className={`album-cover ${al.cover ? "" : "cover-glass"}`}
@@ -326,30 +308,23 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
               <div className="album-card-artist">{al.artist}{al.year ? ` · ${al.year}` : ""}</div>
             </button>
           ))}
-          {filteredAlbums.length === 0 && (
-            <div className="empty-state">No albums match "{query}".</div>
-          )}
         </div>
       )}
 
       {albums.length > 0 && !searching && tab === "playlists" && (
         <div className="playlist-list">
-          {filteredPlaylists.map((p) => (
+          {playlists.map((p) => (
             <button key={p.id} className="playlist-row" onClick={() => onOpenPlaylist(p)}>
-              <div className="playlist-thumb" style={{ background: "var(--accent)" }}>
-                <Wand2 size={16} color="#fff" />
-              </div>
+              {playlistThumb(p)}
               <div className="playlist-row-meta">
                 <div className="playlist-row-name">{p.name}</div>
                 <div className="playlist-row-count">{p.trackIds.length} tracks</div>
               </div>
             </button>
           ))}
-          {filteredPlaylists.length === 0 && (
+          {playlists.length === 0 && (
             <div className="empty-state">
-              {playlists.length === 0
-                ? "No playlists yet — render an effect in Studio to create one."
-                : `No playlists match "${query}".`}
+              No playlists yet — render an effect in Studio to create one.
             </div>
           )}
         </div>
@@ -357,7 +332,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
 
       {albums.length > 0 && !searching && tab === "songs" && (
         <div className="track-list">
-          {filteredSongs.map((t) => {
+          {library.map((t) => {
             const isFavorite = favPlaylist?.trackIds.includes(t.id);
             return (
               <div key={t.id} className="track-row-wrap track-row-thumb-wrap">
@@ -398,8 +373,8 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
               </div>
             );
           })}
-          {filteredSongs.length === 0 && (
-            <div className="empty-state">No tracks match "{query}".</div>
+          {library.length === 0 && (
+            <div className="empty-state">No tracks in your library yet.</div>
           )}
         </div>
       )}
