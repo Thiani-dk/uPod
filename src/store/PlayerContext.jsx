@@ -31,6 +31,7 @@ import { loadFont } from "../utils/fonts";
 import { MediaSession } from "@capgo/capacitor-media-session";
 import { NoisyAudio } from "../utils/noisyAudio";
 import { AudioFocus } from "../utils/audioFocus";
+import { ensureNotificationPermission } from "../utils/notificationPermission";
 import { armBackgroundWatchdog, checkAndClearBackgroundKillMarker } from "../utils/backgroundPlaybackWatchdog";
 
 const PlayerStateContext = createContext(null);
@@ -806,6 +807,11 @@ export function PlayerProvider({ children }) {
     (async () => {
       const granted = await ensureStoragePermission();
       if (!granted) return;
+
+      // Fire-and-forget — unrelated to library hydration/scanning below,
+      // and a denial should just mean no notification, not a stalled
+      // launch. See NotificationPermissionPlugin.java for why this exists.
+      ensureNotificationPermission();
 
       // Load persisted cover overrides before anything else touches
       // state.library — both the cache-hydration and the scan paths below
