@@ -8,7 +8,22 @@ import { readNativeTags } from "./nativeTagReader";
 
 export const SUPPORTED_EXTENSIONS = ["mp3", "flac", "m4a", "ogg"];
 
-const VOICE_NOTE_PATTERN = /(^|[\\/])(PTT-|AUD-.*-WA|voice[- _]?message|voicemail)/i;
+// Filename conventions confirmed against real recorder/call-recorder output
+// (WhatsApp's PTT-/AUD-*-WA; Samsung's "Call recording_<timestamp>.m4a";
+// OnePlus/Oppo's Sound Recorder, whose "Standard/Call/Interview/Meeting
+// recording <n>.mp3" defaults were found live on a real device's
+// Music/Recordings tree; and the generic "Recording"/"REC_" prefixes common
+// across third-party voice-recorder apps) — not guessed. Deliberately
+// anchored to the *start* of the filename (or a path segment), and
+// deliberately does NOT include a bare "voice" substring: a real track in
+// the wild ("Voice Of Kenya (outro).mp3") would otherwise be misfiltered.
+const VOICE_NOTE_PATTERN =
+  /(^|[\\/])(PTT-|AUD-.*-WA|voice[- _]?message|voice[- _]?note|voicemail|call[- _]?record|(standard|interview|meeting)[- _]?recording|recording|rec[-_])/i;
+
+// Soft signal only (see possiblyNotMusic below) — a voice note/call
+// recording rarely runs past a minute, while even a short musical
+// interlude/skit track almost always still carries at least partial tags.
+const LIKELY_SHORT_RECORDING_MAX_BYTES = 700 * 1024;
 
 export function isAudioFile(filename) {
   const ext = filename.split(".").pop().toLowerCase();
@@ -17,6 +32,18 @@ export function isAudioFile(filename) {
 
 export function isVoiceNote(filename) {
   return VOICE_NOTE_PATTERN.test(filename);
+}
+
+// True audio duration isn't available here — computing it would mean
+// decoding the file, which is exactly the full-payload read the native scan
+// path (nativeFolder.js) is built to avoid. File size is a reasonable proxy
+// instead: it's already known for free from the readdir() entry, and voice
+// notes/call recordings are near-universally encoded at bitrates far below
+// music (mono, 16-96kbps vs. music's typical 128-320kbps stereo), so a
+// small file is a fair "probably short" stand-in for an actual duration
+// check.
+function isLikelyShortRecording(sizeBytes) {
+  return typeof sizeBytes === "number" && sizeBytes > 0 && sizeBytes < LIKELY_SHORT_RECORDING_MAX_BYTES;
 }
 
 function hashString(str) {
@@ -82,7 +109,7 @@ export function albumIdForTrack(t) {
 // Shared shape-building logic between the browser (File-backed) and native
 // (descriptor-backed) parsing paths — everything after tags have been read
 // is identical regardless of where the bytes came from.
-function buildTrackFromTags(tags, { id, name, addedAt, extra }) {
+function buildTrackFromTags(tags, { id, name, addedAt, sizeBytes, extra }) {
   const title = tags.title || name.replace(/\.[^/.]+$/, "");
   const artist = (tags.artist || "Unknown Artist").trim();
   const hasAlbumTag = Boolean(tags.album && tags.album.trim());
@@ -93,6 +120,16 @@ function buildTrackFromTags(tags, { id, name, addedAt, extra }) {
   const genre = (tags.genre || "").trim() || null;
   const coverData = extractCoverData(tags.picture);
   const cover = coverData ? coverObjectUrlFromBytes(coverData.bytes, coverData.format) : null;
+
+  // Soft "review, don't auto-hide" signal — see isLikelyShortRecording and
+  // the module comment above VOICE_NOTE_PATTERN. Real downloaded music
+  // almost always carries at least a partial tag (a title, an artist —
+  // something); a small file with none of title/artist/album tagged at all
+  // is unusual for music but exactly what an unedited voice note looks
+  // like. Never combined with isVoiceNote's hard filename match — those are
+  // already dropped before a track object is even built.
+  const hasAnyTag = Boolean((tags.title && tags.title.trim()) || (tags.artist && tags.artist.trim()) || hasAlbumTag);
+  const possiblyNotMusic = !hasAnyTag && isLikelyShortRecording(sizeBytes);
 
   return {
     id,
@@ -109,6 +146,7 @@ function buildTrackFromTags(tags, { id, name, addedAt, extra }) {
     cover,
     coverBytes: coverData?.bytes || null,
     coverFormat: coverData?.format || null,
+    possiblyNotMusic,
     ...extra,
   };
 }
@@ -119,6 +157,7 @@ export async function parseTrackFile(file) {
     id: `${file.name}-${file.size}-${file.lastModified}`,
     name: file.name,
     addedAt: file.lastModified || Date.now(),
+    sizeBytes: file.size,
     extra: { file },
   });
 }
@@ -133,6 +172,7 @@ export async function parseNativeTrackDescriptor({ name, relativePath, folderPat
     id: `${relativePath}-${size}-${mtime || 0}`,
     name,
     addedAt: mtime || Date.now(),
+    sizeBytes: size,
     extra: { relativePath, folderPath, size, native: true },
   });
 }
@@ -148,9 +188,21 @@ export async function parseLibrary(fileList) {
   return tracks;
 }
 
+// A track flagged possiblyNotMusic stays out of albums/library views (and
+// off the "single::<id>" singles list too) until the user has actually
+// looked at it in the "Possibly not music" review list and either
+// confirmed it as real music or excluded it — see reviewStatus. It's never
+// silently dropped for good on its own; state.library (the full scanned
+// set, unfiltered) is what that review screen reads from.
+export function isTrackVisible(t) {
+  if (t.reviewStatus === "excluded") return false;
+  if (t.possiblyNotMusic && t.reviewStatus !== "confirmed") return false;
+  return true;
+}
+
 export function groupIntoAlbums(tracks) {
   const map = new Map();
-  for (const t of tracks) {
+  for (const t of tracks.filter(isTrackVisible)) {
     const key = albumIdForTrack(t);
     if (!map.has(key)) {
       const seed = t.hasAlbumTag ? t.album : `${t.title}::${t.artist}::${t.id}`;

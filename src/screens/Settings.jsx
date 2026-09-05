@@ -22,8 +22,9 @@ function PackPreview({ pack }) {
   );
 }
 
-export default function Settings() {
+export default function Settings({ onOpenReviewTracks }) {
   const { theme, buttonPack, fontFamily, selectedFolderName, albums, library, libraryError, loadingLibrary, libraryProgress } = usePlayerState();
+  const pendingReviewCount = library.filter((t) => t.possiblyNotMusic && !t.reviewStatus).length;
   const { setTheme, setButtonPack, pickFolder, pickNativeFolder } = usePlayerActions();
   const inputRef = useRef(null);
   const [fontPickerOpen, setFontPickerOpen] = useState(false);
@@ -143,6 +144,20 @@ export default function Settings() {
           </div>
           <div className="settings-row-value">{albums?.length || 0}</div>
         </div>
+
+        {isNative && (
+          <div className="settings-row settings-row-tappable" onClick={onOpenReviewTracks}>
+            <div>
+              <div className="settings-row-label">Possibly not music</div>
+              <div className="settings-row-sub">
+                {pendingReviewCount > 0
+                  ? `${pendingReviewCount} short, untagged file${pendingReviewCount === 1 ? "" : "s"} awaiting review`
+                  : "Nothing awaiting review"}
+              </div>
+            </div>
+            {pendingReviewCount > 0 && <div className="settings-row-value">{pendingReviewCount}</div>}
+          </div>
+        )}
       </div>
 
       {isNative && (

@@ -19,6 +19,7 @@ import PlaylistDetail from "./screens/PlaylistDetail";
 import InstantMix from "./screens/InstantMix";
 import Karaoke from "./screens/Karaoke";
 import Settings from "./screens/Settings";
+import ReviewTracks from "./screens/ReviewTracks";
 import WelcomeOnboarding from "./screens/WelcomeOnboarding";
 import { AllFilesAccess } from "./utils/allFilesAccess";
 import { getFontStack } from "./utils/fonts";
@@ -38,6 +39,7 @@ const SCREEN_BACK_TARGETS = {
   nowplaying: "library",
   studio: "library",
   settings: "library",
+  reviewtracks: "settings",
 };
 
 function Shell() {
@@ -212,7 +214,8 @@ function Shell() {
               <PlaylistDetail playlist={activePlaylist} onBack={() => setScreen(playlistOrigin)} />
             )}
             {screen === "karaoke" && <Karaoke />}
-            {screen === "settings" && <Settings />}
+            {screen === "settings" && <Settings onOpenReviewTracks={() => setScreen("reviewtracks")} />}
+            {screen === "reviewtracks" && <ReviewTracks onBack={() => setScreen("settings")} />}
           </div>
           {screen !== "nowplaying" && <MiniPlayer onOpen={() => setScreen("nowplaying")} />}
         </div>

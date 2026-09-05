@@ -48,6 +48,24 @@ const PlayerActionsContext = createContext(null);
 // a single Context re-renders all its consumers when the provided value's
 // reference changes.
 const PlayerTimeContext = createContext(null);
+// MediaSession.setPositionState() crosses the native bridge into Android's
+// real MediaSessionCompat, which pushes the session to the top of the stack
+// and re-renders the lock-screen/notification on every call. Calling it on
+// every "timeupdate" tick (several times a second, see above) fired dozens
+// of native session updates per second — logcat showed Android's own
+// NotificationService rate-limiter ("Shedding") dropping our updates as a
+// result, and the resulting churn is suspected to have contributed to
+// playback jank. Position sync is throttled to this interval during normal
+// playback; play/pause/seek/track-change still update immediately (via
+// setPlaybackState/setMetadata, which aren't on the tick path, and via the
+// seek/track-change jump detection in the timeupdate handler itself).
+const POSITION_SYNC_INTERVAL_MS = 1500;
+// See the audio-focus listener effect for the full story — a loss/
+// lossTransient arriving less than this long after our own
+// AudioFocus.requestFocus() call is assumed to be Chromium's own internal
+// focus request evicting ours, not a real interruption (observed ~2.5s
+// gap via logcat; this leaves comfortable margin either side).
+const SELF_COLLISION_GUARD_MS = 4000;
 
 export const FAVORITES_PLAYLIST_ID = "pl-favorites";
 export const SPEED_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5];
@@ -441,6 +459,18 @@ function reducer(state, action) {
         currentTime: wasCurrent ? 0 : state.currentTime,
       };
     }
+    // A decision made on the "Possibly not music" review screen (see
+    // actions.reviewTrack) — "confirmed" makes it a normal library track,
+    // "excluded" hides it the same way a hard-filtered voice note is
+    // hidden, and null (undo) puts it back up for review. Only ever
+    // touches state.library's own reviewStatus field; the file on disk is
+    // untouched either way, unlike DELETE_TRACK above.
+    case "REVIEW_TRACK": {
+      const library = state.library.map((t) =>
+        t.id === action.trackId ? { ...t, reviewStatus: action.decision } : t
+      );
+      return { ...state, library, albums: groupIntoAlbums(library) };
+    }
     // Restores a queue/position saved by a previous session (see
     // savePlaybackState in libraryCache.js) — resolved against
     // state.library (already updated by the LOAD_LIBRARY dispatched just
@@ -500,11 +530,21 @@ export function PlayerProvider({ children }) {
   // Listening-stats accounting: how many real seconds we've accumulated
   // for the currently-loaded track since the last flush to localStorage.
   const listenRef = useRef({ trackId: null, lastTime: 0, pendingSeconds: 0 });
+  // Wall-clock time of the last MediaSession.setPositionState() call — see
+  // POSITION_SYNC_INTERVAL_MS below for why this exists.
+  const lastPositionSyncRef = useRef(0);
   // Always-current state.playing, read by the background-kill watchdog's
   // 'pause' listener (registered once on mount, so it can't close over a
   // fresh value the normal way).
   const playingRef = useRef(false);
   playingRef.current = state.playing;
+  // Always-current copy of state.library, read by pickNativeFolder (a
+  // useCallback with an empty dep array, so it can't close over fresh state
+  // the normal way) to carry reviewStatus decisions forward onto a fresh
+  // rescan's track objects — otherwise every rescan would forget which
+  // "possibly not music" tracks the user already confirmed or excluded.
+  const libraryRef = useRef([]);
+  libraryRef.current = state.library;
   // Guards the playlists-persist effect below against firing with the
   // still-default initialState.playlists before the launch effect has had
   // a chance to hydrate whatever was actually saved last session — without
@@ -519,6 +559,9 @@ export function PlayerProvider({ children }) {
   // to the real <audio> element once its metadata has actually loaded —
   // setting .currentTime any earlier is unreliable across browsers/WebViews.
   const pendingSeekRef = useRef(null);
+  // When this app's own AudioFocus.requestFocus() last fired — see the
+  // focus-change listener effect below (SELF_COLLISION_GUARD_MS) for why.
+  const focusRequestedAtRef = useRef(0);
 
   if (!audioRef.current && typeof Audio !== "undefined") {
     audioRef.current = new Audio();
@@ -573,6 +616,24 @@ export function PlayerProvider({ children }) {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !currentTrack) return;
+
+    // Cut the previous track's audio synchronously, right here, before the
+    // async getTrackObjectUrl() lookup below even starts — not after it
+    // resolves. A prefetched track (skipping to the next queued one)
+    // resolves near-instantly since its read already finished in the
+    // background, but picking an arbitrary track elsewhere (Tracks tab, a
+    // different album) hits a fresh native full-file read, and that native
+    // bridge round trip is exactly the gap during which the OLD source was
+    // previously left assigned and still playing on this same <audio>
+    // element — audio.src only got overwritten once the NEW track's read
+    // resolved. removeAttribute (not audio.src = "") + load() is the
+    // standard no-network-error way to fully reset an HTMLMediaElement:
+    // setting src to an empty string resolves against the current page URL
+    // and fires a real error event, which would wrongly surface the
+    // "file may be missing or unreadable" toast on every track change.
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
 
     // Flush whatever we'd accumulated for the previous track before
     // switching, then start a fresh accounting window for this one — plus
@@ -657,19 +718,28 @@ export function PlayerProvider({ children }) {
       const delta = now - l.lastTime;
       // Ignore seeks/loops (negative or implausibly large jumps) — only
       // count genuine forward playback time.
-      if (delta > 0 && delta < 5) l.pendingSeconds += delta;
+      const isJump = !(delta > 0 && delta < 5);
+      if (!isJump) l.pendingSeconds += delta;
       l.lastTime = now;
       if (l.pendingSeconds >= 10) flushListen();
       dispatch({ type: "TICK", currentTime: now });
       if (audio.duration) {
-        // Powers the scrub bar on the lock screen/notification — settled
-        // with .catch() since it can reject on transient inconsistent
-        // values (e.g. position momentarily exceeding duration mid-seek).
-        MediaSession.setPositionState({
-          duration: audio.duration,
-          playbackRate: audio.playbackRate,
-          position: audio.currentTime,
-        }).catch(() => {});
+        // Powers the scrub bar on the lock screen/notification. Throttled
+        // to POSITION_SYNC_INTERVAL_MS — see its definition for why — but a
+        // seek/loop/track-change (the same jump detected above for listen
+        // accounting) forces an immediate sync so the OS-level scrub bar
+        // doesn't lag a user-initiated seek. Settled with .catch() since it
+        // can reject on transient inconsistent values (e.g. position
+        // momentarily exceeding duration mid-seek).
+        const nowMs = performance.now();
+        if (isJump || nowMs - lastPositionSyncRef.current >= POSITION_SYNC_INTERVAL_MS) {
+          lastPositionSyncRef.current = nowMs;
+          MediaSession.setPositionState({
+            duration: audio.duration,
+            playbackRate: audio.playbackRate,
+            position: audio.currentTime,
+          }).catch(() => {});
+        }
       }
     };
     const onLoaded = () => {
@@ -866,8 +936,17 @@ export function PlayerProvider({ children }) {
       const { tracks, folderPath } = await scanNativeFolder((done, total) =>
         dispatch({ type: "LIBRARY_SCAN_PROGRESS", done, total })
       );
-      dispatch({ type: "LOAD_LIBRARY", tracks, folderName: folderPath });
-      saveCachedLibrary({ tracks, folderPath }).catch((err) => {
+      // Carry forward any "possibly not music" review decision already
+      // made for a track that's still there post-rescan (matched by id,
+      // same as playlists/cover overrides/playback-state restoration do).
+      const reviewDecisions = new Map(
+        libraryRef.current.filter((t) => t.reviewStatus).map((t) => [t.id, t.reviewStatus])
+      );
+      const reviewedTracks = reviewDecisions.size
+        ? tracks.map((t) => (reviewDecisions.has(t.id) ? { ...t, reviewStatus: reviewDecisions.get(t.id) } : t))
+        : tracks;
+      dispatch({ type: "LOAD_LIBRARY", tracks: reviewedTracks, folderName: folderPath });
+      saveCachedLibrary({ tracks: reviewedTracks, folderPath }).catch((err) => {
         console.warn("Couldn't persist library cache:", err);
       });
     } catch (err) {
@@ -998,9 +1077,13 @@ export function PlayerProvider({ children }) {
   // (pausedByFocusLossRef) — for a transient loss we're still registered
   // and waiting for the eventual AUDIOFOCUS_GAIN; abandoning here would
   // drop that registration early.
+  //
+  // focusRequestedAtRef records when this fires — see the listener effect
+  // below for why.
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     if (state.playing) {
+      focusRequestedAtRef.current = Date.now();
       AudioFocus.requestFocus().catch(() => {});
     } else if (!pausedByFocusLossRef.current) {
       AudioFocus.abandonFocus().catch(() => {});
@@ -1014,11 +1097,34 @@ export function PlayerProvider({ children }) {
   // treating transient the same avoids playing quietly under something
   // that expects to have the room, e.g. a voice assistant reply). Only a
   // duck (a brief, low-priority sound) lowers volume instead of pausing.
+  //
+  // SELF_COLLISION_GUARD_MS guards against a self-inflicted false "loss":
+  // confirmed via logcat that on this WebView, playing an <audio> element
+  // makes Chromium's own internal org.chromium.content.browser.
+  // AudioFocusDelegate request native audio focus for itself too, ~2.5s
+  // after playback starts — a SEPARATE request from this plugin's, from
+  // the same uid/pid. Android doesn't know they're "the same" playback, so
+  // Chromium's later request evicts ours and we get handed AUDIOFOCUS_LOSS
+  // for our own track's own audio. Before this guard, that made every
+  // single track pause itself a few seconds in, every time (see the commit
+  // that added this guard for the full logcat trace) — the exact
+  // "AudioFocus" comment above, written when this plugin was added,
+  // assumed Chromium never requests focus on its own; that's no longer
+  // true on this WebView build.
+  // A REAL external interruption landing in that same ~2-3s window is
+  // vanishingly unlikely, so ignoring an implausibly-early loss/lossTransient
+  // is a safe trade — and if Chromium's own delegate ever does get handed a
+  // *genuine* later loss (once it, not us, holds the real focus token), it
+  // pauses the <audio> element itself, which the existing native "pause"
+  // listener (see the timeupdate/loadedmetadata effect above) already syncs
+  // into state.playing regardless of anything this listener does.
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     const handle = AudioFocus.addListener("focuschange", ({ type }) => {
       const audio = audioRef.current;
       if (type === "loss" || type === "lossTransient") {
+        const sinceRequest = Date.now() - focusRequestedAtRef.current;
+        if (sinceRequest < SELF_COLLISION_GUARD_MS) return;
         if (playingRef.current) {
           pausedByFocusLossRef.current = true;
           actionsRef.current.pause();
@@ -1227,6 +1333,16 @@ export function PlayerProvider({ children }) {
         console.warn("Couldn't persist library after delete:", err);
       });
       return { ok: true };
+    },
+    // decision: "confirmed" (treat as a normal library track from now on),
+    // "excluded" (hide it, same as a hard-filtered voice note — reversible,
+    // unlike deleteTrack), or null (undo, back to the review list).
+    reviewTrack: (trackId, decision) => {
+      dispatch({ type: "REVIEW_TRACK", trackId, decision });
+      const tracks = state.library.map((t) => (t.id === trackId ? { ...t, reviewStatus: decision } : t));
+      saveCachedLibrary({ tracks, folderPath: state.selectedFolderName }).catch((err) => {
+        console.warn("Couldn't persist review decision:", err);
+      });
     },
     addTrackToPlaylist: (playlistId, track) => dispatch({ type: "ADD_TRACK_TO_PLAYLIST", playlistId, track }),
     addTracksToPlaylist: (playlistId, tracks) => dispatch({ type: "ADD_TRACKS_TO_PLAYLIST", playlistId, tracks }),

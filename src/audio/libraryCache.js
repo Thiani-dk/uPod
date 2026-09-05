@@ -130,6 +130,13 @@ async function buildRecord(t, shrinkCache) {
     relativePath: t.relativePath,
     folderPath: t.folderPath,
     size: t.size,
+    possiblyNotMusic: Boolean(t.possiblyNotMusic),
+    // "confirmed"/"excluded", or null while still awaiting review — the
+    // user's decision from the "Possibly not music" screen. Must survive a
+    // rescan (PlayerContext's pickNativeFolder carries it forward onto the
+    // freshly-scanned track before this is called again) since a rescan
+    // otherwise has no way to know a track was already looked at.
+    reviewStatus: t.reviewStatus || null,
     coverBytes,
     coverFormat,
   };
@@ -191,6 +198,8 @@ export async function loadLibrary() {
       relativePath: r.relativePath,
       folderPath: r.folderPath,
       size: r.size,
+      possiblyNotMusic: Boolean(r.possiblyNotMusic),
+      reviewStatus: r.reviewStatus || null,
       native: true,
       cover: coverObjectUrlFromBytes(r.coverBytes, r.coverFormat),
       coverBytes: r.coverBytes,
