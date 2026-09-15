@@ -54,6 +54,30 @@ html, body, #root { height: 100%; margin: 0; }
 * { box-sizing: border-box; }
 .upod-root { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg-img), var(--bg); color: var(--text); width: 100%; height: 100vh; border-radius: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; transition: background .4s ease, color .3s ease; }
 .shell { display: flex; flex: 1; min-height: 0; }
+
+/* Touch feedback.
+   Android WebView paints a translucent blue rectangle over anything it
+   considers tappable (-webkit-tap-highlight-color), which ignores our
+   border-radius and reads as a stray blue block/shadow on round controls
+   like .tp-main. Killed app-wide here — nothing in uPod relies on it, and
+   it's the only press affordance the platform gives us for free, so the
+   rules below replace it with an intentional one instead of leaving taps
+   feeling dead: a brief scale-down plus a small accent tint.
+   Deliberately no box-shadow/blur in the press state — this WebView can't
+   composite blurred translucency (see the .native-platform notes above). */
+.upod-root, .upod-root * { -webkit-tap-highlight-color: transparent; }
+.upod-root button, .upod-root [role="button"] { -webkit-tap-highlight-color: transparent; }
+
+/* Press state for the round transport controls and the mini-player's play
+   button. :active is the touch-accurate one here — it's applied for the
+   whole press on WebView, and there's no hover on a phone. */
+.tp-btn, .mini-play { transition: transform .12s ease, background-color .12s ease, color .12s ease; }
+.tp-btn:active, .mini-play:active { transform: scale(0.92); }
+.tp-side:active { color: var(--accent); }
+.tp-main:active, .mini-play:active { background: color-mix(in srgb, var(--accent) 82%, #000); }
+
+/* Generic rows/list items: a flat accent wash rather than the blue box. */
+.nav-item:active, .track-row:active, .album-card:active, .pill:active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.4); opacity: 0; pointer-events: none; transition: opacity .25s ease; z-index: 20; }
 .scrim.show { opacity: 1; pointer-events: auto; }
 .sidebar { width: 240px; flex-shrink: 0; background: var(--sidebar); backdrop-filter: blur(var(--blur)) saturate(1.6); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.6); border-right: var(--glass-border-top); box-shadow: inset -1px 0 0 rgba(255,255,255,0.15); display: flex; flex-direction: column; padding: 18px 14px; position: relative; z-index: 21; }
