@@ -3,6 +3,11 @@
 // no key required, CORS-enabled) and fuzzy-matches it against your local
 // track titles to fix track numbers — without ever touching your files,
 // only the in-app metadata.
+//
+// Requests go through the shared client in musicbrainz.js rather than
+// straight fetch: the service's ~1 req/sec budget is global to the app,
+// and this is no longer the only feature spending it.
+import { mbFetch, escapeLucene, LOOKUP_FAILURE } from "./musicbrainz";
 
 function normalize(str) {
   return (str || "")
@@ -33,34 +38,36 @@ function similarity(a, b) {
   return overlap / Math.max(setA.size, setB.size, 1);
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`MusicBrainz request failed (${res.status})`);
-  return res.json();
-}
-
 // Returns [{ title, position }] for the best-matching release, or null.
 export async function fetchCanonicalTrackOrder(albumTitle, artistName) {
-  if (typeof navigator !== "undefined" && navigator.onLine === false) {
-    return { ok: false, offline: true };
-  }
-  try {
-    const query = encodeURIComponent(`release:"${albumTitle}" AND artist:"${artistName}"`);
-    const searchUrl = `https://musicbrainz.org/ws/2/release/?query=${query}&fmt=json&limit=5`;
-    const searchData = await fetchJson(searchUrl);
-    const release = searchData?.releases?.[0];
-    if (!release) return { ok: false, notFound: true };
+  const query = encodeURIComponent(
+    `release:"${escapeLucene(albumTitle)}" AND artist:"${escapeLucene(artistName)}"`
+  );
+  const search = await mbFetch(`release/?query=${query}&fmt=json&limit=5`);
+  if (!search.ok) return failureToLegacyShape(search.failure);
 
-    const releaseUrl = `https://musicbrainz.org/ws/2/release/${release.id}?inc=recordings&fmt=json`;
-    const releaseData = await fetchJson(releaseUrl);
-    const media = releaseData?.media?.[0];
-    if (!media?.tracks?.length) return { ok: false, notFound: true };
+  const release = search.data?.releases?.[0];
+  if (!release) return { ok: false, notFound: true };
 
-    const order = media.tracks.map((t) => ({ title: t.title, position: t.position }));
-    return { ok: true, order, releaseTitle: releaseData.title };
-  } catch {
-    return { ok: false, error: true };
-  }
+  const detail = await mbFetch(`release/${release.id}?inc=recordings&fmt=json`);
+  if (!detail.ok) return failureToLegacyShape(detail.failure);
+
+  const media = detail.data?.media?.[0];
+  if (!media?.tracks?.length) return { ok: false, notFound: true };
+
+  const order = media.tracks.map((t) => ({ title: t.title, position: t.position }));
+  return { ok: true, order, releaseTitle: detail.data.title };
+}
+
+// The album screen already branches on { offline, notFound, error }, so
+// the shared taxonomy is mapped back to that shape rather than changing a
+// working UI as a side effect of this refactor. Rate limiting is reported
+// as `error` because that's what the existing copy handles ("try again"),
+// which is the right advice for a throttle too.
+function failureToLegacyShape(failure) {
+  if (failure === LOOKUP_FAILURE.OFFLINE) return { ok: false, offline: true };
+  if (failure === LOOKUP_FAILURE.NOT_FOUND) return { ok: false, notFound: true };
+  return { ok: false, error: true };
 }
 
 // Matches local tracks against the canonical order by title similarity.

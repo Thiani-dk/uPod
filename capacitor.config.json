@@ -2,5 +2,8 @@
   "appId": "com.katiso.upod",
   "appName": "uPod",
   "webDir": "dist",
-  "bundledWebRuntime": false
+  "bundledWebRuntime": false,
+  "android": {
+    "appendUserAgent": "uPod/1.0 ( com.katiso.upod )"
+  }
 }
