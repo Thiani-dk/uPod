@@ -77,6 +77,14 @@ export const SPEED_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5];
 // pool was on screen. See playRandomMixFrom.
 export const RANDOM_QUEUE_SIZE = 100;
 
+// How long after a headset-driven "next track" a play/pause action is
+// still read as the tail of a triple-click rather than a separate press.
+// Android's own double-tap window (ViewConfiguration.getDoubleTapTimeout)
+// is 300ms, and the third click's play/pause only fires after that window
+// expires, so this has to comfortably exceed it — see the media-session
+// effect for the full sequence.
+const TRIPLE_CLICK_WINDOW_MS = 700;
+
 // Playlist cover overrides live in the same coverOverrides map/IndexedDB
 // store as album cover overrides (see SET_ALBUM_COVER_OVERRIDE) — this
 // prefix just keeps a playlist id from ever colliding with an album key
@@ -558,6 +566,15 @@ export function PlayerProvider({ children }) {
   // fresh value the normal way).
   const playingRef = useRef(false);
   playingRef.current = state.playing;
+  // Always-current queue position, read by the headset triple-click
+  // detection in the media-session effect (registered once on mount, so it
+  // can't close over a fresh value the normal way).
+  const queueIndexRef = useRef(0);
+  queueIndexRef.current = state.queueIndex;
+  // When the last headset-driven skip-to-next happened, and where the
+  // queue was sitting just before it — see the media-session effect.
+  const headsetSkipAtRef = useRef(0);
+  const headsetPreSkipIndexRef = useRef(null);
   // Always-current copy of state.library, read by pickNativeFolder (a
   // useCallback with an empty dep array, so it can't close over fresh state
   // the normal way) to carry reviewStatus decisions forward onto a fresh
@@ -829,10 +846,59 @@ export function PlayerProvider({ children }) {
   // plugin's JS API mirrors navigator.mediaSession closely and falls back
   // to the real Web API on non-native builds.
   useEffect(() => {
-    MediaSession.setActionHandler({ action: "play" }, () => actionsRef.current.play()).catch(() => {});
-    MediaSession.setActionHandler({ action: "pause" }, () => actionsRef.current.pause()).catch(() => {});
+    // Headset multi-click. Worth being explicit about what is and isn't
+    // ours here, because most of it is the platform's:
+    //
+    // Android itself handles single- and double-click on the headset
+    // button. androidx's MediaSessionCompat.Callback.onMediaButtonEvent
+    // returns false outright on SDK >= 27 ("Double tap of play/pause as
+    // skipping to next already handled by framework"), and uPod targets
+    // 36 — so a single click arrives here as play/pause and a double
+    // click arrives as nexttrack, with no code of ours involved. That's
+    // why single-click play/pause already worked.
+    //
+    // Triple-click is NOT provided, but it is inferable from what the
+    // framework does deliver. The sequence for three clicks is: click 2
+    // fires skip-to-next immediately, then click 3 starts a fresh
+    // double-tap window and lands as play/pause once it expires. So a
+    // play/pause arriving within TRIPLE_CLICK_WINDOW_MS of a skip we just
+    // performed means the user actually clicked three times — we undo the
+    // skip and step back from where the queue was before it.
+    //
+    // The cost of inferring rather than being told: deliberately
+    // double-clicking to skip and then pressing play/pause again within
+    // ~700ms is indistinguishable from a triple-click, and will be read as
+    // one. That's a rare gesture pair, and the alternative (delaying every
+    // single click by a detection window) would regress the one part of
+    // this that already works well.
+    const consumedAsTripleClick = () => {
+      if (!headsetSkipAtRef.current) return false;
+      if (Date.now() - headsetSkipAtRef.current > TRIPLE_CLICK_WINDOW_MS) return false;
+      const preSkip = headsetPreSkipIndexRef.current;
+      headsetSkipAtRef.current = 0;
+      headsetPreSkipIndexRef.current = null;
+      if (preSkip == null) return false;
+      // "Previous" relative to the track the user was actually on when
+      // they started clicking — not relative to the one the framework's
+      // double-click already skipped us forward to.
+      actionsRef.current.jumpToQueueIndex(Math.max(0, preSkip - 1));
+      return true;
+    };
+
+    MediaSession.setActionHandler({ action: "play" }, () => {
+      if (consumedAsTripleClick()) return;
+      actionsRef.current.play();
+    }).catch(() => {});
+    MediaSession.setActionHandler({ action: "pause" }, () => {
+      if (consumedAsTripleClick()) return;
+      actionsRef.current.pause();
+    }).catch(() => {});
     MediaSession.setActionHandler({ action: "previoustrack" }, () => actionsRef.current.previous()).catch(() => {});
-    MediaSession.setActionHandler({ action: "nexttrack" }, () => actionsRef.current.next()).catch(() => {});
+    MediaSession.setActionHandler({ action: "nexttrack" }, () => {
+      headsetSkipAtRef.current = Date.now();
+      headsetPreSkipIndexRef.current = queueIndexRef.current;
+      actionsRef.current.next();
+    }).catch(() => {});
     MediaSession.setActionHandler({ action: "seekto" }, (details) => {
       if (details.seekTime != null) actionsRef.current.seek(details.seekTime);
     }).catch(() => {});
