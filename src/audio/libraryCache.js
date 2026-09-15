@@ -158,7 +158,7 @@ async function buildRecord(t, shrinkCache) {
   };
 }
 
-export async function saveLibrary({ tracks, folderPath }) {
+export async function saveLibrary({ tracks, folderPath, fingerprint }) {
   const shrinkCache = new Map();
   const records = new Array(tracks.length);
   let nextIndex = 0;
@@ -177,7 +177,18 @@ export async function saveLibrary({ tracks, folderPath }) {
     const tx = db.transaction([TRACKS_STORE, META_STORE], "readwrite");
     tx.objectStore(TRACKS_STORE).clear();
     for (const r of records) tx.objectStore(TRACKS_STORE).put(r);
-    tx.objectStore(META_STORE).put({ key: "info", folderPath, scannedAt: Date.now(), trackCount: records.length });
+    tx.objectStore(META_STORE).put({
+      key: "info",
+      folderPath,
+      scannedAt: Date.now(),
+      trackCount: records.length,
+      // What the folder looked like at scan time — compared against a
+      // cheap re-walk on later launches to spot new files without
+      // reparsing anything. Absent on caches written before this existed,
+      // which loadLibraryFingerprint reports as "unknown" rather than
+      // "changed", so an upgrade doesn't greet everyone with a prompt.
+      fingerprint: fingerprint || null,
+    });
     await txDone(tx);
   } finally {
     db.close();
@@ -225,6 +236,43 @@ export async function loadLibrary() {
     return { tracks, folderPath: info.folderPath };
   } catch {
     return null;
+  } finally {
+    db?.close();
+  }
+}
+
+// The folder summary recorded when the cached library was last scanned,
+// or null when nothing's cached / the cache predates fingerprinting.
+// Never throws — a failure here just means skipping the change check.
+export async function loadLibraryFingerprint() {
+  if (typeof indexedDB === "undefined") return null;
+  let db;
+  try {
+    db = await openDb();
+    const info = await promisifyRequest(db.transaction(META_STORE, "readonly").objectStore(META_STORE).get("info"));
+    return info?.fingerprint || null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+// Records a new fingerprint without touching the cached tracks — used
+// after the user dismisses a "new music found" prompt, so the same
+// difference doesn't re-prompt on every launch until they rescan.
+export async function updateLibraryFingerprint(fingerprint) {
+  if (typeof indexedDB === "undefined" || !fingerprint) return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(META_STORE, "readwrite");
+    const store = tx.objectStore(META_STORE);
+    const info = await promisifyRequest(store.get("info"));
+    if (info) store.put({ ...info, fingerprint });
+    await txDone(tx);
+  } catch {
+    /* non-fatal — worst case the prompt appears again next launch */
   } finally {
     db?.close();
   }

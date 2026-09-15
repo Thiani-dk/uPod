@@ -5,6 +5,7 @@ import { parseLibrary, groupIntoAlbums, normalizeKey, albumIdForTrack, coverObje
 import { Capacitor } from "@capacitor/core";
 import {
   scanNativeFolder,
+  fingerprintNativeFolder,
   readNativeTrackObjectUrl,
   deleteNativeTrack,
   ensureStoragePermission,
@@ -24,6 +25,8 @@ import {
   loadPlaybackState as loadCachedPlaybackState,
   saveSettings as persistSettings,
   loadSettings as loadCachedSettings,
+  loadLibraryFingerprint,
+  updateLibraryFingerprint,
 } from "../audio/libraryCache";
 import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
 import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffects";
@@ -142,6 +145,15 @@ const initialState = {
   // to have been killed by the OS while backgrounded (see
   // backgroundPlaybackWatchdog.js) rather than just paused.
   backgroundKillNotice: false,
+  // Set by the cheap folder re-walk (see checkForNewMusic) when the music
+  // folder no longer matches what the cached library was built from:
+  // { added, removed, fingerprint }. Purely a prompt — nothing rescans off
+  // the back of this without the user saying so.
+  newMusicFound: null,
+  // True only while that check is actually running, so the manual
+  // "Check for new music" button can show progress. The launch-time check
+  // runs silently and never sets this.
+  checkingForNewMusic: false,
 };
 
 function shuffleArray(arr) {
@@ -271,6 +283,10 @@ function reducer(state, action) {
       return { ...state, sleepTimerMinutes: null, sleepTimerEndsAt: null };
     case "SET_BACKGROUND_KILL_NOTICE":
       return { ...state, backgroundKillNotice: action.value };
+    case "CHECKING_FOR_NEW_MUSIC":
+      return { ...state, checkingForNewMusic: true };
+    case "SET_NEW_MUSIC_FOUND":
+      return { ...state, checkingForNewMusic: false, newMusicFound: action.result };
     case "ADD_TRACK_TO_PLAYLIST": {
       const { playlistId, track } = action;
       const playlist = state.playlists.find((p) => p.id === playlistId);
@@ -588,6 +604,11 @@ export function PlayerProvider({ children }) {
   // "possibly not music" tracks the user already confirmed or excluded.
   const libraryRef = useRef([]);
   libraryRef.current = state.library;
+  // Always-current copy of the pending "new music" result, so
+  // dismissNewMusicFound (a stable useCallback) can read the fingerprint
+  // it needs to record without taking state.newMusicFound as a dependency.
+  const newMusicFoundRef = useRef(null);
+  newMusicFoundRef.current = state.newMusicFound;
   // Guards the playlists-persist effect below against firing with the
   // still-default initialState.playlists before the launch effect has had
   // a chance to hydrate whatever was actually saved last session — without
@@ -1068,7 +1089,7 @@ export function PlayerProvider({ children }) {
     dispatch({ type: "LOADING_LIBRARY" });
     markFolderConfirmedOnce();
     try {
-      const { tracks, folderPath } = await scanNativeFolder((done, total) =>
+      const { tracks, folderPath, fingerprint } = await scanNativeFolder((done, total) =>
         dispatch({ type: "LIBRARY_SCAN_PROGRESS", done, total })
       );
       // Carry forward any "possibly not music" review decision already
@@ -1081,12 +1102,71 @@ export function PlayerProvider({ children }) {
         ? tracks.map((t) => (reviewDecisions.has(t.id) ? { ...t, reviewStatus: reviewDecisions.get(t.id) } : t))
         : tracks;
       dispatch({ type: "LOAD_LIBRARY", tracks: reviewedTracks, folderName: folderPath });
-      saveCachedLibrary({ tracks: reviewedTracks, folderPath }).catch((err) => {
+      // A completed scan is by definition up to date with the folder, so
+      // clear any outstanding "new music" prompt rather than leaving a
+      // stale one on screen.
+      dispatch({ type: "SET_NEW_MUSIC_FOUND", result: null });
+      saveCachedLibrary({ tracks: reviewedTracks, folderPath, fingerprint }).catch((err) => {
         console.warn("Couldn't persist library cache:", err);
       });
     } catch (err) {
       dispatch({ type: "LIBRARY_ERROR", message: err.message || "Couldn't read your music folder." });
     }
+  }, []);
+
+  // Cheap "has the folder changed since the last scan?" check — the whole
+  // point is that it never parses tags, so it costs a folder walk
+  // (~0.5s for ~740 files) rather than a full scan (~33s). Compares the
+  // freshly-walked summary against the one stored with the cached library
+  // and reports a difference; it never rescans or mutates the library
+  // itself, since silently doing a full scan on launch is exactly the
+  // slow-startup behaviour the cache was built to remove.
+  //
+  // `silent` is how the launch-time call runs: no spinner, and a failure
+  // (permission revoked, folder renamed) is swallowed, because a
+  // best-effort background check must never turn into a launch error. The
+  // manual Settings button passes silent=false to get both.
+  const checkForNewMusic = useCallback(async ({ silent = false } = {}) => {
+    if (!Capacitor.isNativePlatform()) return null;
+    if (!silent) dispatch({ type: "CHECKING_FOR_NEW_MUSIC" });
+    try {
+      const cached = await loadLibraryFingerprint();
+      const current = await fingerprintNativeFolder();
+      // No stored fingerprint means a cache written before this existed —
+      // adopt the current one silently instead of claiming a change we
+      // can't actually substantiate.
+      if (!cached) {
+        await updateLibraryFingerprint(current);
+        if (!silent) dispatch({ type: "SET_NEW_MUSIC_FOUND", result: null });
+        return null;
+      }
+      const changed =
+        cached.fileCount !== current.fileCount ||
+        cached.newestMtime !== current.newestMtime ||
+        cached.totalSize !== current.totalSize;
+      const result = changed
+        ? {
+            added: Math.max(0, current.fileCount - cached.fileCount),
+            removed: Math.max(0, cached.fileCount - current.fileCount),
+            fingerprint: current,
+          }
+        : null;
+      dispatch({ type: "SET_NEW_MUSIC_FOUND", result });
+      return result;
+    } catch (err) {
+      console.warn("Couldn't check for new music:", err);
+      if (!silent) dispatch({ type: "SET_NEW_MUSIC_FOUND", result: null });
+      return null;
+    }
+  }, []);
+
+  // "Not now" — records what the folder looks like right now so the same
+  // unchanged difference doesn't re-prompt on every single launch. The
+  // next genuine change moves the fingerprint again and does prompt.
+  const dismissNewMusicFound = useCallback(async () => {
+    const pending = newMusicFoundRef.current;
+    dispatch({ type: "SET_NEW_MUSIC_FOUND", result: null });
+    if (pending?.fingerprint) await updateLibraryFingerprint(pending.fingerprint);
   }, []);
 
   // Hydrates straight from the IndexedDB cache when there's one — no
@@ -1152,6 +1232,11 @@ export function PlayerProvider({ children }) {
         });
       }
 
+      // Deliberately not awaited: the library is already on screen by this
+      // point, and the folder walk must not sit between launch and a
+      // usable UI. Whatever it finds surfaces later as a dismissible
+      // prompt, so arriving a second or two in is fine.
+      checkForNewMusic({ silent: true });
       return;
     }
 
@@ -1163,7 +1248,7 @@ export function PlayerProvider({ children }) {
       dispatch({ type: "SET_PENDING_FOLDER_CONFIRM", path });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pickNativeFolder]);
+  }, [pickNativeFolder, checkForNewMusic]);
 
   // Appearance settings (theme/button pack/font), restored on cold launch.
   // Deliberately its own mount effect rather than a step inside
@@ -1465,6 +1550,8 @@ export function PlayerProvider({ children }) {
   const actions = {
     pickFolder,
     pickNativeFolder,
+    checkForNewMusic,
+    dismissNewMusicFound,
     // Called by WelcomeOnboarding once the user grants storage access and
     // returns to the app — kicks off the exact same hydrate-or-scan flow
     // the mount effect runs, which never got to on a fresh install/
@@ -1719,7 +1806,7 @@ export function PlayerProvider({ children }) {
     state.libraryError, state.libraryProgress, state.pendingFolderConfirm, state.eqBands,
     state.eqPreset, state.playlists, state.studioStatus, state.trackOrderStatus, state.queueToast,
     state.sleepTimerMinutes, state.sleepTimerEndsAt,
-    state.coverOverrides, state.backgroundKillNotice,
+    state.coverOverrides, state.backgroundKillNotice, state.newMusicFound, state.checkingForNewMusic,
   ]);
 
   return (

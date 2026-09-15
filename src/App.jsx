@@ -43,8 +43,9 @@ const SCREEN_BACK_TARGETS = {
 };
 
 function Shell() {
-  const { theme, accentColor, fontFamily, queue, queueIndex, albums, backgroundKillNotice } = usePlayerState();
-  const { dismissBackgroundKillNotice, initializeLibrary } = usePlayerActions();
+  const { theme, accentColor, fontFamily, queue, queueIndex, albums, backgroundKillNotice, newMusicFound, loadingLibrary } =
+    usePlayerState();
+  const { dismissBackgroundKillNotice, initializeLibrary, dismissNewMusicFound, pickNativeFolder } = usePlayerActions();
   // null while checking (avoids a flash of the wrong screen), then true
   // only on a fresh install/reinstall where "All files access" hasn't
   // been granted yet — see WelcomeOnboarding.jsx for why this can't just
@@ -181,6 +182,40 @@ function Shell() {
               </div>
               <button className="ghost-btn" style={{ padding: "4px 10px" }} onClick={dismissBackgroundKillNotice}>
                 Got it
+              </button>
+            </div>
+          )}
+          {newMusicFound && !loadingLibrary && (
+            <div
+              style={{
+                margin: "0 14px",
+                padding: "10px 12px",
+                borderRadius: 10,
+                background: "var(--panel)",
+                border: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                fontSize: 12,
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, marginBottom: 3 }}>
+                  {newMusicFound.added > 0
+                    ? `Found ${newMusicFound.added} new ${newMusicFound.added === 1 ? "file" : "files"}`
+                    : newMusicFound.removed > 0
+                      ? `${newMusicFound.removed} ${newMusicFound.removed === 1 ? "file is" : "files are"} no longer there`
+                      : "Your music folder changed"}
+                </div>
+                <div className="settings-row-sub">
+                  Rescan to pick up the changes — this reads tags for every track, so it takes a moment.
+                </div>
+              </div>
+              <button className="ghost-btn" style={{ padding: "4px 10px" }} onClick={dismissNewMusicFound}>
+                Not now
+              </button>
+              <button className="ghost-btn" style={{ padding: "4px 10px" }} onClick={pickNativeFolder}>
+                Rescan
               </button>
             </div>
           )}

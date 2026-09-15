@@ -23,9 +23,10 @@ function PackPreview({ pack }) {
 }
 
 export default function Settings({ onOpenReviewTracks }) {
-  const { theme, buttonPack, fontFamily, selectedFolderName, albums, library, libraryError, loadingLibrary, libraryProgress } = usePlayerState();
+  const { theme, buttonPack, fontFamily, selectedFolderName, albums, library, libraryError, loadingLibrary, libraryProgress, checkingForNewMusic, newMusicFound } =
+    usePlayerState();
   const pendingReviewCount = library.filter((t) => t.possiblyNotMusic && !t.reviewStatus).length;
-  const { setTheme, setButtonPack, pickFolder, pickNativeFolder } = usePlayerActions();
+  const { setTheme, setButtonPack, pickFolder, pickNativeFolder, checkForNewMusic } = usePlayerActions();
   const inputRef = useRef(null);
   const [fontPickerOpen, setFontPickerOpen] = useState(false);
   const isNative = Capacitor.isNativePlatform();
@@ -115,6 +116,28 @@ export default function Settings({ onOpenReviewTracks }) {
             />
             <button className="ghost-btn" onClick={saveFolderPathAndRescan}>
               {folderPathSaved ? "Saved — rescanning…" : "Save & rescan"}
+            </button>
+          </div>
+        )}
+
+        {isNative && (
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">Check for new music</div>
+              <div className="settings-row-sub">
+                {checkingForNewMusic
+                  ? "Checking…"
+                  : newMusicFound
+                    ? "Changes found — see the prompt at the top of the screen."
+                    : "Compares your folder against the saved library without re-reading tags, so it only takes a moment."}
+              </div>
+            </div>
+            <button
+              className="ghost-btn"
+              onClick={() => checkForNewMusic({ silent: false })}
+              disabled={checkingForNewMusic || loadingLibrary}
+            >
+              {checkingForNewMusic ? "Checking…" : "Check"}
             </button>
           </div>
         )}
