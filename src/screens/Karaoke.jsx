@@ -1,6 +1,6 @@
 // src/screens/Karaoke.jsx
 import React, { useEffect, useState } from "react";
-import { WifiOff, Sparkles, Save, Key } from "lucide-react";
+import { WifiOff, Sparkles, Save, Key, RefreshCw } from "lucide-react";
 import { usePlayerState } from "../store/PlayerContext";
 import {
   fetchLyricsOnline,
@@ -8,7 +8,32 @@ import {
   fetchLyricsFromGemini,
   getGeminiKey,
   setGeminiKey,
+  LYRICS_FAILURE,
 } from "../online/lyrics";
+
+// Each lookup failure reads differently on purpose. A genuine no-match is
+// expected behaviour for an obscure or mistagged track and shouldn't be
+// dressed up as a malfunction; a network or rate-limit failure is a
+// temporary condition the user can actually do something about, and
+// previously both rendered the same "the lookup failed" line.
+const FAILURE_COPY = {
+  [LYRICS_FAILURE.NOT_FOUND]: {
+    title: "No lyrics found for this track",
+    sub: "Neither LRCLIB nor lyrics.ovh has this artist/title. That's normal for obscure releases — and for files whose tags don't match the real artist or song name, which you can fix from the track's Edit metadata option.",
+  },
+  [LYRICS_FAILURE.NETWORK]: {
+    title: "Couldn't reach the lyrics service",
+    sub: "The request didn't complete — the lyrics service may be down, or the connection dropped. This isn't a sign the song has no lyrics; it's worth trying again.",
+  },
+  [LYRICS_FAILURE.RATE_LIMITED]: {
+    title: "Lyrics service is rate-limiting us",
+    sub: "LRCLIB is temporarily refusing further lookups. Wait a minute or so and try again — the song may well be in there.",
+  },
+  [LYRICS_FAILURE.OFFLINE]: {
+    title: "You're offline and this track isn't cached yet",
+    sub: "Lyrics are looked up online and saved automatically the first time. Once a track's lyrics have been found, they show here even with no connection.",
+  },
+};
 
 function useOnlineStatus() {
   const [online, setOnline] = useState(navigator.onLine);
@@ -38,22 +63,40 @@ export default function Karaoke() {
   const [keyDraft, setKeyDraft] = useState(getGeminiKey());
   const [showKeyInput, setShowKeyInput] = useState(false);
 
+  // Runs even when offline: the lookup checks the user's own paste and the
+  // IndexedDB cache of previously-sourced lyrics before it ever touches
+  // the network, so a cached track still shows its lyrics with no
+  // connection — which is the whole point of caching them. Only if both
+  // miss does it report OFFLINE.
   useEffect(() => {
     if (!track) return;
+    let cancelled = false;
     setResult(null);
     setShowManual(false);
-    if (!online) return;
     setLoading(true);
-    fetchLyricsOnline(track.artist, track.title).then((r) => {
+    fetchLyricsOnline(track).then((r) => {
+      if (cancelled) return;
       setResult(r);
       setLoading(false);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [track?.id, online]);
+
+  function retry() {
+    if (!track) return;
+    setLoading(true);
+    fetchLyricsOnline(track).then((r) => {
+      setResult(r);
+      setLoading(false);
+    });
+  }
 
   async function tryAi() {
     if (!track) return;
     setTryingAi(true);
-    const r = await fetchLyricsFromGemini(track.artist, track.title);
+    const r = await fetchLyricsFromGemini(track);
     setResult(r);
     setTryingAi(false);
   }
@@ -63,11 +106,12 @@ export default function Karaoke() {
     setShowKeyInput(false);
   }
 
-  function saveManual() {
+  async function saveManual() {
     if (!track || !manualDraft.trim()) return;
-    const entry = saveManualLyrics(track.artist, track.title, manualDraft);
-    setResult(entry);
-    setShowManual(false);
+    saveManualLyrics(track, manualDraft).then((entry) => {
+      setResult(entry);
+      setShowManual(false);
+    });
   }
 
   if (!track) {
@@ -81,23 +125,18 @@ export default function Karaoke() {
         <div className="karaoke-track-sub">{track.artist} · {track.album}</div>
       </div>
 
-      {!online && (
-        <div className="karaoke-offline">
-          <WifiOff size={22} />
-          <div className="karaoke-offline-title">Karaoke mode needs a connection</div>
-          <div className="karaoke-offline-sub">
-            Lyrics are looked up online and cached locally the first time — once cached, they'll show up here even offline.
-          </div>
-        </div>
-      )}
+      {loading && <div className="karaoke-loading">Searching lyrics sources…</div>}
 
-      {online && loading && <div className="karaoke-loading">Searching lyrics sources…</div>}
-
-      {online && !loading && result?.ok && (
+      {!loading && result?.ok && (
         <>
           <div className="karaoke-source">
-            {result.fromCache ? "From your local cache" : `Found via ${result.source}`}
-            {result.synced ? " · time-synced lyrics available" : ""} · unverified, community-sourced
+            {result.source === "manual"
+              ? "Your saved lyrics"
+              : result.fromCache
+                ? `Saved offline · originally from ${result.source}`
+                : `Found via ${result.source}`}
+            {result.synced ? " · time-synced lyrics available" : ""}
+            {result.source === "manual" || result.ai ? "" : " · unverified, community-sourced"}
           </div>
           <div className="karaoke-lyrics">
             {result.lyrics.split("\n").map((line, i) => (
@@ -109,13 +148,20 @@ export default function Karaoke() {
         </>
       )}
 
-      {online && !loading && !result?.ok && !showManual && (
+      {!loading && !result?.ok && !showManual && (
         <div className="karaoke-offline">
-          <div className="karaoke-offline-title">No lyrics found automatically</div>
+          {result?.failure === LYRICS_FAILURE.OFFLINE && <WifiOff size={22} />}
+          <div className="karaoke-offline-title">{FAILURE_COPY[result?.failure]?.title || "No lyrics found"}</div>
           <div className="karaoke-offline-sub">
-            {result?.notFound ? "Nothing matched this artist/title on the free lyrics database." : "The lookup failed — you can try again, paste lyrics yourself, or try an AI reconstruction."}
+            {FAILURE_COPY[result?.failure]?.sub || "Nothing matched this track on the free lyrics databases."}
           </div>
           <div className="np-actions" style={{ marginTop: 14 }}>
+            {/* A no-match won't change on a retry — the song simply isn't in
+                the database — so the retry button is only offered for the
+                failures that genuinely might resolve on a second attempt. */}
+            {result?.failure !== LYRICS_FAILURE.NOT_FOUND && (
+              <button className="pill-btn" onClick={retry}><RefreshCw size={13} /> Try again</button>
+            )}
             <button className="pill-btn" onClick={() => setShowManual(true)}><Save size={13} /> Paste lyrics</button>
             <button className="pill-btn" onClick={() => (getGeminiKey() ? tryAi() : setShowKeyInput(true))}>
               <Sparkles size={13} /> {tryingAi ? "Asking AI…" : "Try AI reconstruction"}

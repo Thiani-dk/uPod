@@ -8,7 +8,7 @@
 import { coverObjectUrlFromBytes } from "./metadata";
 
 const DB_NAME = "upod-library";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const TRACKS_STORE = "tracks";
 const META_STORE = "meta";
 // User-chosen cover art, keyed by album id (same identity groupIntoAlbums
@@ -17,6 +17,18 @@ const META_STORE = "meta";
 // derived/embedded data, so it must survive a rescan even though `tracks`
 // gets wiped and rebuilt on every one.
 const COVER_OVERRIDES_STORE = "coverOverrides";
+
+// Lyrics fetched from a real lyrics database (LRCLIB, lyrics.ovh), keyed
+// by track id, so Karaoke can show them again with no connection. Only
+// genuinely sourced lyrics ever land here — never an AI reconstruction
+// (that's best-guess synthesis, not verified lyrics, and must not be
+// persisted as though it were) and never the user's own pasted text.
+const LYRICS_STORE = "lyrics";
+// The user's own pasted lyrics, kept deliberately separate from the
+// sourced-lyrics cache above rather than mixed into it: this is user data,
+// not a cache of something retrieved, and nothing else in the app stores
+// it — so dropping it would lose the paste feature outright.
+const MANUAL_LYRICS_STORE = "lyricsManual";
 
 // Cover thumbnails are capped at this size purely to bound IndexedDB
 // storage for large libraries — some embedded covers are several thousand
@@ -34,6 +46,10 @@ function openDb() {
       if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE, { keyPath: "key" });
       if (!db.objectStoreNames.contains(COVER_OVERRIDES_STORE)) {
         db.createObjectStore(COVER_OVERRIDES_STORE, { keyPath: "albumId" });
+      }
+      if (!db.objectStoreNames.contains(LYRICS_STORE)) db.createObjectStore(LYRICS_STORE, { keyPath: "trackId" });
+      if (!db.objectStoreNames.contains(MANUAL_LYRICS_STORE)) {
+        db.createObjectStore(MANUAL_LYRICS_STORE, { keyPath: "trackId" });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -387,6 +403,76 @@ export async function loadSettings() {
       db.transaction(META_STORE, "readonly").objectStore(META_STORE).get("settings")
     );
     return record?.settings || null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+// --- Lyrics -----------------------------------------------------------
+// Both pairs below never throw: a lyrics cache miss (or an outright
+// storage failure) should just mean "look it up online again", never a
+// broken Karaoke screen.
+
+// Stores lyrics that came from a real lyrics database. Callers must not
+// pass an AI reconstruction or the user's own pasted text — see
+// LYRICS_STORE.
+export async function saveCachedLyrics(trackId, entry) {
+  if (typeof indexedDB === "undefined" || !trackId) return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(LYRICS_STORE, "readwrite");
+    tx.objectStore(LYRICS_STORE).put({ trackId, ...entry });
+    await txDone(tx);
+  } catch {
+    /* non-fatal — the lookup still succeeded, it just won't be offline */
+  } finally {
+    db?.close();
+  }
+}
+
+export async function loadCachedLyrics(trackId) {
+  if (typeof indexedDB === "undefined" || !trackId) return null;
+  let db;
+  try {
+    db = await openDb();
+    const record = await promisifyRequest(
+      db.transaction(LYRICS_STORE, "readonly").objectStore(LYRICS_STORE).get(trackId)
+    );
+    return record || null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+export async function saveManualLyricsRecord(trackId, lyrics) {
+  if (typeof indexedDB === "undefined" || !trackId) return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(MANUAL_LYRICS_STORE, "readwrite");
+    tx.objectStore(MANUAL_LYRICS_STORE).put({ trackId, lyrics, savedAt: Date.now() });
+    await txDone(tx);
+  } catch {
+    /* non-fatal */
+  } finally {
+    db?.close();
+  }
+}
+
+export async function loadManualLyricsRecord(trackId) {
+  if (typeof indexedDB === "undefined" || !trackId) return null;
+  let db;
+  try {
+    db = await openDb();
+    const record = await promisifyRequest(
+      db.transaction(MANUAL_LYRICS_STORE, "readonly").objectStore(MANUAL_LYRICS_STORE).get(trackId)
+    );
+    return record || null;
   } catch {
     return null;
   } finally {
