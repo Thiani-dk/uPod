@@ -68,6 +68,12 @@ const POSITION_SYNC_INTERVAL_MS = 1500;
 // focus request evicting ours, not a real interruption (observed ~2.5s
 // gap via logcat; this leaves comfortable margin either side).
 const SELF_COLLISION_GUARD_MS = 4000;
+// How long to keep holding native audio focus after playback pauses, so
+// pause/play toggling doesn't drop and re-take the token (which is what
+// collides with Chromium's own AudioFocusDelegate — see playWithFocus).
+// Long enough to cover deliberate toggling, short enough that leaving the
+// app paused hands the token back promptly.
+const FOCUS_RELEASE_DELAY_MS = 5000;
 
 export const FAVORITES_PLAYLIST_ID = "pl-favorites";
 export const SPEED_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5];
@@ -604,6 +610,10 @@ export function PlayerProvider({ children }) {
   // When this app's own AudioFocus.requestFocus() last fired — see the
   // focus-change listener effect below (SELF_COLLISION_GUARD_MS) for why.
   const focusRequestedAtRef = useRef(0);
+  // Whether this app currently holds native audio focus, and the pending
+  // deferred release — see playWithFocus() for why both exist.
+  const focusHeldRef = useRef(false);
+  const focusReleaseTimerRef = useRef(null);
 
   if (!audioRef.current && typeof Audio !== "undefined") {
     audioRef.current = new Audio();
@@ -617,6 +627,44 @@ export function PlayerProvider({ children }) {
     }
     if (engineRef.current) engineRef.current.resume();
     return engineRef.current;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Starts the element, but takes native audio focus *first* and waits for
+  // it. Ordering is the whole point, not politeness: Chromium's own
+  // org.chromium.content.browser.AudioFocusDelegate requests native focus
+  // for the <audio> element as soon as it starts playing, from the same
+  // uid/pid as this plugin's request but as a separate request Android
+  // can't tell is "the same" playback — so whichever of the two lands
+  // *last* evicts the other.
+  //
+  // We only survive being evicted; Chromium doesn't. A loss handed to us is
+  // swallowed by SELF_COLLISION_GUARD_MS in the listener effect below, and
+  // the element keeps playing. A loss handed to Chromium's delegate makes
+  // it pause the element outright, which the native "pause" listener syncs
+  // straight into state.playing — the button silently flips back to "play"
+  // ~50-120ms after the tap. So the only safe order is: us first, Chromium
+  // last. Requesting after play() (which is what the old [state.playing]
+  // effect did) loses that race on every resume.
+  //
+  // Ordering alone isn't enough, though: Chromium's delegate keeps holding
+  // its token across a *brief* pause, so a quick pause->play (a double-tap
+  // on the transport button) would re-request while that token is still
+  // live and evict it after all. Hence focusHeldRef — while we already hold
+  // focus we start the element directly and issue no second request, so
+  // there is nothing to collide with. Releasing is likewise deferred
+  // (FOCUS_RELEASE_DELAY_MS) so toggling play/pause doesn't churn the token.
+  const playWithFocus = useCallback((audio) => {
+    ensureEngine();
+    const play = () => audio.play().catch(() => {});
+    if (!Capacitor.isNativePlatform()) return play();
+
+    clearTimeout(focusReleaseTimerRef.current);
+    if (focusHeldRef.current) return play();
+
+    focusRequestedAtRef.current = Date.now();
+    focusHeldRef.current = true;
+    return AudioFocus.requestFocus().catch(() => {}).then(play);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -699,10 +747,7 @@ export function PlayerProvider({ children }) {
       }
       audio.src = url;
       audio.playbackRate = state.playbackRate;
-      if (state.playing) {
-        ensureEngine();
-        audio.play().catch(() => {});
-      }
+      if (state.playing) playWithFocus(audio);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrack]);
@@ -739,13 +784,12 @@ export function PlayerProvider({ children }) {
     const audio = audioRef.current;
     if (!audio) return;
     if (state.playing) {
-      ensureEngine();
-      audio.play().catch(() => {});
+      playWithFocus(audio);
     } else {
       audio.pause();
       flushListen();
     }
-  }, [state.playing]);
+  }, [state.playing, playWithFocus]);
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = state.playbackRate;
@@ -1107,6 +1151,7 @@ export function PlayerProvider({ children }) {
           position: savedPlayback.position || 0,
         });
       }
+
       return;
     }
 
@@ -1217,11 +1262,17 @@ export function PlayerProvider({ children }) {
   // below for why.
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
-    if (state.playing) {
-      focusRequestedAtRef.current = Date.now();
-      AudioFocus.requestFocus().catch(() => {});
-    } else if (!pausedByFocusLossRef.current) {
-      AudioFocus.abandonFocus().catch(() => {});
+    // Acquiring moved into playWithFocus() above — it has to happen before
+    // audio.play(), not as a side effect after state.playing flipped.
+    // Releasing stays here, but deferred: dropping the token the instant
+    // playback pauses means a quick resume has to re-request it, which is
+    // exactly the collision playWithFocus() exists to avoid.
+    if (!state.playing && !pausedByFocusLossRef.current) {
+      clearTimeout(focusReleaseTimerRef.current);
+      focusReleaseTimerRef.current = setTimeout(() => {
+        focusHeldRef.current = false;
+        AudioFocus.abandonFocus().catch(() => {});
+      }, FOCUS_RELEASE_DELAY_MS);
     }
   }, [state.playing]);
 
@@ -1260,6 +1311,10 @@ export function PlayerProvider({ children }) {
       if (type === "loss" || type === "lossTransient") {
         const sinceRequest = Date.now() - focusRequestedAtRef.current;
         if (sinceRequest < SELF_COLLISION_GUARD_MS) return;
+        // A real loss means Android handed the token elsewhere — resuming
+        // has to request it again rather than assume we still hold it.
+        focusHeldRef.current = false;
+        clearTimeout(focusReleaseTimerRef.current);
         if (playingRef.current) {
           pausedByFocusLossRef.current = true;
           actionsRef.current.pause();
