@@ -19,7 +19,7 @@ const TABS = [
 
 export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
   const { albums, playlists, library, coverOverrides, selectedFolderName, loadingLibrary, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
-  const { pickFolder, pickNativeFolder, playTrackListFrom, addTrackToPlaylist, removeTrackFromPlaylist } = usePlayerActions();
+  const { pickFolder, pickNativeFolder, playRandomMixFrom, addTrackToPlaylist, removeTrackFromPlaylist } = usePlayerActions();
   const [tab, setTab] = useState("playnow");
   // The persistent top search bar is the ONLY search input on this screen.
   // It spans the whole library (Artists/Albums/Playlists/Tracks) regardless
@@ -50,12 +50,16 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
     }
   }
 
-  // Tapping a track here queues the whole visible Tracks list (respecting
-  // an active unified search), not just its album — that's Album/Playlist
-  // detail's job via playAlbumFromTrack/playPlaylist, left untouched.
+  // Tapping a track here starts a fresh random mix drawn from the pool
+  // that's currently on screen — the full Tracks list, or the current
+  // unified-search results while searching — with the tapped track first.
+  // It deliberately no longer queues that list sequentially from the tap.
+  // Album/Playlist detail keep their own sequential behaviour via
+  // playAlbumFromTrack/playPlaylist, and Play Now's carousels keep theirs
+  // via playTrackListFrom; both are left untouched.
   function playSong(track) {
-    const visibleTracks = searching ? searchResults.tracks : library;
-    playTrackListFrom(visibleTracks, track);
+    const visiblePool = searching ? searchResults.tracks : library;
+    playRandomMixFrom(visiblePool, track);
   }
 
   function filterByArtist(artist) {

@@ -72,6 +72,11 @@ const SELF_COLLISION_GUARD_MS = 4000;
 export const FAVORITES_PLAYLIST_ID = "pl-favorites";
 export const SPEED_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5];
 
+// How many tracks a tap in the Tracks list / search results queues up —
+// the tapped track plus this many minus one drawn at random from whatever
+// pool was on screen. See playRandomMixFrom.
+export const RANDOM_QUEUE_SIZE = 100;
+
 // Playlist cover overrides live in the same coverOverrides map/IndexedDB
 // store as album cover overrides (see SET_ALBUM_COVER_OVERRIDE) — this
 // prefix just keeps a playlist id from ever colliding with an album key
@@ -1295,6 +1300,29 @@ export function PlayerProvider({ children }) {
     dispatch({ type: "SET_QUEUE", queue: ordered, index: 0 });
   }, []);
 
+  // Tapping a track in the Tracks list (or in search results) builds a
+  // fresh random mix rather than queueing the visible list sequentially
+  // from that point: the tapped track first, then up to
+  // RANDOM_QUEUE_SIZE - 1 more drawn at random from the same pool that was
+  // on screen (the full Tracks list, or the current search results while
+  // searching). A pool smaller than RANDOM_QUEUE_SIZE just contributes all
+  // of itself, shuffled.
+  //
+  // The tapped track is placed at index 0 rather than left wherever the
+  // shuffle put it, so it's always what actually starts playing — that's
+  // the one thing about the tap the user is unambiguously asking for.
+  //
+  // "The queue resets" on every such tap falls out of SET_QUEUE replacing
+  // the queue wholesale: a second tap anywhere in the list or in search
+  // results discards the previous random mix and draws a new one. Next/
+  // Previous (SET_INDEX) and the queue modal's own reorder never route
+  // through here, so neither disturbs the current mix.
+  const playRandomMixFrom = useCallback((pool, track) => {
+    if (!pool || pool.length === 0 || !track) return;
+    const rest = shuffleArray(pool.filter((t) => t.id !== track.id)).slice(0, RANDOM_QUEUE_SIZE - 1);
+    dispatch({ type: "SET_QUEUE", queue: [track, ...rest], index: 0 });
+  }, []);
+
   // Same idea as playAlbumFromTrack/playPlaylist, but for an arbitrary track
   // list — tapping one card in a Play Now carousel (e.g. "Recently Played")
   // should start there and continue through the rest of that same list,
@@ -1325,6 +1353,7 @@ export function PlayerProvider({ children }) {
     playPlaylist,
     playTrackList,
     playTrackListFrom,
+    playRandomMixFrom,
     togglePlay: () => dispatch({ type: "TOGGLE_PLAY" }),
     // Explicit play/pause (rather than toggle) for callers that know which
     // state they want regardless of current state — e.g. MediaSession's
