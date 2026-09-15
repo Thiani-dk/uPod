@@ -22,6 +22,8 @@ import {
   loadPlaylists as loadCachedPlaylists,
   savePlaybackState as persistPlaybackState,
   loadPlaybackState as loadCachedPlaybackState,
+  saveSettings as persistSettings,
+  loadSettings as loadCachedSettings,
 } from "../audio/libraryCache";
 import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
 import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffects";
@@ -376,6 +378,19 @@ function reducer(state, action) {
       });
       return { ...state, library, albums: groupIntoAlbums(library), trackOrderStatus: null };
     }
+    // Applied once on launch from the persisted settings record (see
+    // loadSettings). Only the appearance keys are read out of it, and each
+    // only if actually present, so a record written by an older/newer
+    // build can never inject unrelated or missing fields into state.
+    case "HYDRATE_SETTINGS": {
+      const saved = action.settings || {};
+      return {
+        ...state,
+        theme: saved.theme ?? state.theme,
+        buttonPack: saved.buttonPack ?? state.buttonPack,
+        fontFamily: saved.fontFamily ?? state.fontFamily,
+      };
+    }
     case "SET_THEME":
       return { ...state, theme: action.theme };
     case "SET_BUTTON_PACK":
@@ -550,6 +565,11 @@ export function PlayerProvider({ children }) {
   // a chance to hydrate whatever was actually saved last session — without
   // this, that first render's default would overwrite the real save.
   const playlistsHydratedRef = useRef(false);
+  // Same guard as playlistsHydratedRef, for the appearance-settings
+  // persist effect below — without it that effect's first run would write
+  // the still-default initialState theme/pack/font straight over whatever
+  // the last session actually saved.
+  const settingsHydratedRef = useRef(false);
   // Set by the audio-focus-change listener effect when it pauses playback
   // for a focus loss, so the matching AUDIOFOCUS_GAIN only resumes if
   // uPod itself did the pausing — never overriding a deliberate user
@@ -1028,6 +1048,50 @@ export function PlayerProvider({ children }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickNativeFolder]);
+
+  // Appearance settings (theme/button pack/font), restored on cold launch.
+  // Deliberately its own mount effect rather than a step inside
+  // initializeLibrary: that one runs only after ensureStoragePermission()
+  // resolves true, so on a fresh install — where WelcomeOnboarding is what
+  // the user is looking at — the saved theme would never be applied at
+  // all. Appearance doesn't depend on storage access, so it shouldn't wait
+  // on it.
+  //
+  // loadFont() is called here for the same reason setFontFamily calls it:
+  // hydrating straight into state skips the action, and without it the
+  // chosen Google Font's stylesheet is never requested, so the app would
+  // render the saved font's CSS stack with nothing to resolve it to and
+  // silently fall back to the default face.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    (async () => {
+      const saved = await loadCachedSettings();
+      if (saved) {
+        if (saved.fontFamily) loadFont(saved.fontFamily);
+        dispatch({ type: "HYDRATE_SETTINGS", settings: saved });
+      }
+      // Set regardless of whether anything was saved — on a first-ever
+      // launch there's no record yet, and the persist effect below still
+      // needs to start saving from this point on.
+      settingsHydratedRef.current = true;
+    })();
+  }, []);
+
+  // Persists every appearance change. Gated on settingsHydratedRef so the
+  // effect's initial run can't clobber the saved record with defaults
+  // before the hydrate effect above has read it — the exact guard the
+  // playlists persist effect uses, and for the exact same reason.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (!settingsHydratedRef.current) return;
+    persistSettings({
+      theme: state.theme,
+      buttonPack: state.buttonPack,
+      fontFamily: state.fontFamily,
+    }).catch((err) => {
+      console.warn("Couldn't persist settings:", err);
+    });
+  }, [state.theme, state.buttonPack, state.fontFamily]);
 
   // On launch: request storage permission (needed for the lazy per-track
   // reads playback does later, regardless of cache state). If it's not

@@ -353,3 +353,43 @@ export async function loadPlaybackState() {
     db?.close();
   }
 }
+
+// Appearance settings (theme, button pack, font) had the same gap
+// playlists did before savePlaylists existed — they lived only in React
+// state, so switching to Matte Obsidian held for the session but a
+// force-close from the recent-apps switcher reverted to the default
+// Liquid Glass. Stored as one record under the existing META_STORE, keyed
+// like "info"/"playlists" are, so no new object store or DB version bump.
+// Deliberately one blob rather than a key per setting: they're always
+// written and read together, and a single record keeps adding the next
+// one (EQ bands, say) to a single field.
+export async function saveSettings(settings) {
+  const db = await openDb();
+  try {
+    const tx = db.transaction(META_STORE, "readwrite");
+    tx.objectStore(META_STORE).put({ key: "settings", settings });
+    await txDone(tx);
+  } finally {
+    db.close();
+  }
+}
+
+// Returns the persisted settings object, or null if nothing's been saved
+// yet (first-ever launch, or an install from before this existed). Never
+// throws — a failure here should just mean launching with the default
+// appearance, not block startup.
+export async function loadSettings() {
+  if (typeof indexedDB === "undefined") return null;
+  let db;
+  try {
+    db = await openDb();
+    const record = await promisifyRequest(
+      db.transaction(META_STORE, "readonly").objectStore(META_STORE).get("settings")
+    );
+    return record?.settings || null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
