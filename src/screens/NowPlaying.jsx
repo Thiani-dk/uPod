@@ -261,7 +261,10 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
       <div className="np-screen">
         {queueToast && <div className="shuffle-toast">{queueToast}</div>}
 
-        <div className="np-playing-from">Playing from {track.album || track.artist}</div>
+        <div className="np-playing-from">
+          <span className="np-playing-from-label">Playing from</span>
+          <span className="np-playing-from-name">{track.album || track.artist}</span>
+        </div>
 
         <div
           className={`np-art ${track.cover ? "" : "cover-glass"}`}
