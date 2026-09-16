@@ -1,6 +1,6 @@
 // src/screens/AlbumDetail.jsx
 import React, { useRef, useState } from "react";
-import { ChevronLeft, Play, Shuffle, Heart, Wand2, Pencil, Plus, ImagePlus, RotateCcw, Bookmark, FolderPlus } from "lucide-react";
+import { ChevronLeft, Play, Shuffle, Heart, Wand2, Pencil, Plus, ImagePlus, RotateCcw, Bookmark } from "lucide-react";
 import { usePlayerActions, usePlayerState, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
 import NoteMark from "../components/NoteMark";
 import MetadataEditModal from "../components/MetadataEditModal";
@@ -14,7 +14,7 @@ function formatDur(seconds) {
 }
 
 export default function AlbumDetail({ album: albumProp, onBack }) {
-  const { playAlbumFromTrack, fixAlbumTrackOrder, addToQueue, playTrackList, addTracksToPlaylist, removeTracksFromPlaylist, addTrackToPlaylist, removeTrackFromPlaylist, setAlbumCoverOverride, clearAlbumCoverOverride } = usePlayerActions();
+  const { playAlbumFromTrack, fixAlbumTrackOrder, addToQueue, playTrackList, addTracksToPlaylist, removeTracksFromPlaylist, setAlbumCoverOverride, clearAlbumCoverOverride } = usePlayerActions();
   const { queue, queueIndex, albums, trackOrderStatus, playlists, coverOverrides } = usePlayerState();
   const [lastFixResult, setLastFixResult] = useState(null);
   const [editingTrack, setEditingTrack] = useState(null);
@@ -37,13 +37,6 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
     }
   }
 
-  function toggleTrackFavorite(track) {
-    if (favPlaylist?.trackIds.includes(track.id)) {
-      removeTrackFromPlaylist(FAVORITES_PLAYLIST_ID, track.id);
-    } else {
-      addTrackToPlaylist(FAVORITES_PLAYLIST_ID, track);
-    }
-  }
 
   async function handleFixOrder() {
     setLastFixResult(null);
@@ -175,20 +168,12 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
               </button>
               <button
                 className="icon-btn small track-edit-btn"
-                onClick={(e) => { e.stopPropagation(); toggleTrackFavorite(t); }}
-                aria-label={trackIsFavorited ? "Remove from Favorites" : "Add to Favorites"}
-                title={trackIsFavorited ? "Remove from Favorites" : "Add to Favorites"}
-                style={trackIsFavorited ? { color: "var(--accent)" } : undefined}
-              >
-                <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
-              </button>
-              <button
-                className="icon-btn small track-edit-btn"
                 onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
                 aria-label="Add to playlist"
                 title="Add to playlist"
+                style={trackIsFavorited ? { color: "var(--accent)" } : undefined}
               >
-                <FolderPlus size={13} />
+                <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
               </button>
               <button
                 className="icon-btn small track-edit-btn"

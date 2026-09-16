@@ -1,6 +1,6 @@
 // src/screens/PlaylistDetail.jsx
 import React, { useRef, useState } from "react";
-import { ChevronLeft, Play, Pencil, Check, Plus, Bookmark, FolderPlus, ImagePlus, Trash2, Wand2 } from "lucide-react";
+import { ChevronLeft, Play, Pencil, Check, Plus, Bookmark, ImagePlus, Trash2, Wand2 } from "lucide-react";
 import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID, playlistCoverKey } from "../store/PlayerContext";
 import AddToPlaylistModal from "../components/AddToPlaylistModal";
 
@@ -10,8 +10,6 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
     playPlaylist,
     renamePlaylist,
     addToQueue,
-    addTrackToPlaylist,
-    removeTrackFromPlaylist,
     setPlaylistCoverOverride,
     clearPlaylistCoverOverride,
   } = usePlayerActions();
@@ -34,13 +32,6 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
 
   const favPlaylist = playlists.find((p) => p.id === FAVORITES_PLAYLIST_ID);
 
-  function toggleFavorite(track) {
-    if (favPlaylist?.trackIds.includes(track.id)) {
-      removeTrackFromPlaylist(FAVORITES_PLAYLIST_ID, track.id);
-    } else {
-      addTrackToPlaylist(FAVORITES_PLAYLIST_ID, track);
-    }
-  }
 
   const tracks = playlist.trackIds.map((id) => library.find((t) => t.id === id)).filter(Boolean);
   const currentTrackId = queue[queueIndex]?.id;
@@ -131,20 +122,12 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
               </button>
               <button
                 className="icon-btn small track-edit-btn"
-                onClick={(e) => { e.stopPropagation(); toggleFavorite(t); }}
-                aria-label={trackIsFavorited ? "Remove from Favorites" : "Add to Favorites"}
-                title={trackIsFavorited ? "Remove from Favorites" : "Add to Favorites"}
-                style={trackIsFavorited ? { color: "var(--accent)" } : undefined}
-              >
-                <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
-              </button>
-              <button
-                className="icon-btn small track-edit-btn"
                 onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
                 aria-label="Add to playlist"
                 title="Add to playlist"
+                style={trackIsFavorited ? { color: "var(--accent)" } : undefined}
               >
-                <FolderPlus size={13} />
+                <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
               </button>
               <button
                 className="icon-btn small track-edit-btn"

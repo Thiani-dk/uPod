@@ -1,7 +1,7 @@
 // src/screens/Library.jsx
 import React, { useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Search, X, FolderOpen, Wand2, MoreVertical, Bookmark, FolderPlus, User, Play } from "lucide-react";
+import { Search, X, FolderOpen, Wand2, MoreVertical, Bookmark, User, Play } from "lucide-react";
 import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID, playlistCoverKey } from "../store/PlayerContext";
 import { useUnifiedSearch } from "../utils/search";
 import NoteMark from "../components/NoteMark";
@@ -20,7 +20,7 @@ const TABS = [
 
 export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
   const { albums, playlists, library, generalLibrary, coverOverrides, selectedFolderName, loadingLibrary, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
-  const { pickFolder, pickNativeFolder, playRandomMixFrom, addTrackToPlaylist, removeTrackFromPlaylist, commitCleanerResult } =
+  const { pickFolder, pickNativeFolder, playRandomMixFrom, commitCleanerResult } =
     usePlayerActions();
   const [tab, setTab] = useState("playnow");
   // The persistent top search bar is the ONLY search input on this screen.
@@ -76,13 +76,6 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
 
   const favPlaylist = playlists.find((p) => p.id === FAVORITES_PLAYLIST_ID);
 
-  function toggleFavorite(track) {
-    if (favPlaylist?.trackIds.includes(track.id)) {
-      removeTrackFromPlaylist(FAVORITES_PLAYLIST_ID, track.id);
-    } else {
-      addTrackToPlaylist(FAVORITES_PLAYLIST_ID, track);
-    }
-  }
 
   // Editing a playlist's cover lives in PlaylistDetail (same as album
   // covers only being editable in AlbumDetail) — rows here just reflect
@@ -269,20 +262,12 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                       </button>
                       <button
                         className="icon-btn small track-edit-btn"
-                        onClick={(e) => { e.stopPropagation(); toggleFavorite(t); }}
-                        aria-label={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
-                        title={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
-                        style={isFavorite ? { color: "var(--accent)" } : undefined}
-                      >
-                        <Bookmark size={15} fill={isFavorite ? "currentColor" : "none"} />
-                      </button>
-                      <button
-                        className="icon-btn small track-edit-btn"
                         onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
                         aria-label="Add to playlist"
                         title="Add to playlist"
+                        style={isFavorite ? { color: "var(--accent)" } : undefined}
                       >
-                        <FolderPlus size={15} />
+                        <Bookmark size={15} fill={isFavorite ? "currentColor" : "none"} />
                       </button>
                       <button
                         className="icon-btn small track-edit-btn"
@@ -342,7 +327,6 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
       {albums.length > 0 && !searching && tab === "songs" && (
         <div className="track-list">
           {generalLibrary.map((t) => {
-            const isFavorite = favPlaylist?.trackIds.includes(t.id);
             return (
               <div key={t.id} className="track-row-wrap track-row-thumb-wrap">
                 <button className="track-row-play track-row-with-thumb" onClick={() => playSong(t)}>
@@ -353,23 +337,6 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                     <span className="track-row-text-title">{t.title}</span>
                     <span className="track-row-text-artist">{t.artist}</span>
                   </span>
-                </button>
-                <button
-                  className="icon-btn small track-edit-btn"
-                  onClick={(e) => { e.stopPropagation(); toggleFavorite(t); }}
-                  aria-label={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
-                  title={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
-                  style={isFavorite ? { color: "var(--accent)" } : undefined}
-                >
-                  <Bookmark size={15} fill={isFavorite ? "currentColor" : "none"} />
-                </button>
-                <button
-                  className="icon-btn small track-edit-btn"
-                  onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
-                  aria-label="Add to playlist"
-                  title="Add to playlist"
-                >
-                  <FolderPlus size={15} />
                 </button>
                 <button
                   className="icon-btn small track-edit-btn"

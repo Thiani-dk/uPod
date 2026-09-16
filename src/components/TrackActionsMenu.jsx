@@ -1,18 +1,17 @@
 // src/components/TrackActionsMenu.jsx
 import React, { useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { X, Play, ListPlus, ListMusic, Bookmark, Disc3, User, FolderPlus, Pencil, Trash2, Sparkles } from "lucide-react";
-import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
+import { X, Play, ListPlus, ListMusic, Bookmark, Disc3, User, Pencil, Trash2, Sparkles } from "lucide-react";
+import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
 import useBackButtonClose from "../utils/useBackButtonClose";
 import DeleteTrackModal from "./DeleteTrackModal";
 
 export default function TrackActionsMenu({ track, onClose, onPlay, onOpenAlbum, onFilterArtist, onAddToPlaylist, onEdit, onClean }) {
   useBackButtonClose(onClose);
-  const { albums, playlists } = usePlayerState();
-  const { playNext, addToQueue, addTrackToPlaylist, removeTrackFromPlaylist, deleteTrack } = usePlayerActions();
+  const { albums } = usePlayerState();
+  const { playNext, addToQueue, deleteTrack } = usePlayerActions();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
-  const isFavorite = playlists.find((p) => p.id === FAVORITES_PLAYLIST_ID)?.trackIds.includes(track.id);
   // Deleting the real file only makes sense for a native track that
   // actually has one — a browser-picked or Studio-rendered track has no
   // on-device path to delete.
@@ -33,23 +32,14 @@ export default function TrackActionsMenu({ track, onClose, onPlay, onOpenAlbum, 
     onClose();
   }
 
-  function toggleFavorite() {
-    if (isFavorite) {
-      removeTrackFromPlaylist(FAVORITES_PLAYLIST_ID, track.id);
-    } else {
-      addTrackToPlaylist(FAVORITES_PLAYLIST_ID, track);
-    }
-    onClose();
-  }
 
   const rows = [
     { label: "Play", icon: Play, onClick: () => { onPlay(track); onClose(); } },
     { label: "Play Next", icon: ListPlus, onClick: () => { playNext(track); onClose(); } },
     { label: "Queue", icon: ListMusic, onClick: () => { addToQueue(track); onClose(); } },
-    { label: isFavorite ? "Remove from Favorites" : "Add to Favorites", icon: Bookmark, onClick: toggleFavorite },
     { label: "Album", icon: Disc3, onClick: openAlbumForTrack },
     { label: "Artist", icon: User, onClick: () => { onFilterArtist(track.artist); onClose(); } },
-    { label: "Add to Playlist", icon: FolderPlus, onClick: () => { onAddToPlaylist(track); onClose(); } },
+    { label: "Add to playlist", icon: Bookmark, onClick: () => { onAddToPlaylist(track); onClose(); } },
     { label: "Edit", icon: Pencil, onClick: () => { onEdit(track); onClose(); } },
     // Sits next to Edit deliberately: Edit is "I know what this is, fix
     // the text", Clean up is "I don't know what this is, help me work it
