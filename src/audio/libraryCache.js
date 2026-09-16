@@ -8,7 +8,7 @@
 import { coverObjectUrlFromBytes } from "./metadata";
 
 const DB_NAME = "upod-library";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const TRACKS_STORE = "tracks";
 const META_STORE = "meta";
 // User-chosen cover art, keyed by album id (same identity groupIntoAlbums
@@ -30,6 +30,15 @@ const LYRICS_STORE = "lyrics";
 // it — so dropping it would lose the paste feature outright.
 const MANUAL_LYRICS_STORE = "lyricsManual";
 
+// Metadata the user established for a track — either by confirming an
+// online match or by stating it outright in the cleaner. Its own store,
+// for exactly the reason coverOverrides has one: saveLibrary() clears
+// TRACKS_STORE wholesale on every rescan, so anything living on the track
+// record is derived data that gets rebuilt. This is user data and must
+// survive a rescan, so it's keyed by track id and re-applied at
+// LOAD_LIBRARY time instead.
+const TRACK_METADATA_STORE = "trackMetadata";
+
 // Cover thumbnails are capped at this size purely to bound IndexedDB
 // storage for large libraries — some embedded covers are several thousand
 // pixels square, far more resolution than the UI (album art, now-playing,
@@ -50,6 +59,9 @@ function openDb() {
       if (!db.objectStoreNames.contains(LYRICS_STORE)) db.createObjectStore(LYRICS_STORE, { keyPath: "trackId" });
       if (!db.objectStoreNames.contains(MANUAL_LYRICS_STORE)) {
         db.createObjectStore(MANUAL_LYRICS_STORE, { keyPath: "trackId" });
+      }
+      if (!db.objectStoreNames.contains(TRACK_METADATA_STORE)) {
+        db.createObjectStore(TRACK_METADATA_STORE, { keyPath: "trackId" });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -147,6 +159,14 @@ async function buildRecord(t, shrinkCache) {
     folderPath: t.folderPath,
     size: t.size,
     possiblyNotMusic: Boolean(t.possiblyNotMusic),
+    // Whether the file's own tags are substantial enough to identify it
+    // (see hasRealTags in metadata.js). Persisted rather than recomputed
+    // because the cache hydration path never re-reads tags.
+    hasRealTags: Boolean(t.hasRealTags),
+    // The file's own values, present only while an override is in force —
+    // see applyStoredMetadata. Persisted so a revert stays exact across
+    // the paths that re-save the merged library.
+    metadataOriginal: t.metadataOriginal || null,
     // "confirmed"/"excluded", or null while still awaiting review — the
     // user's decision from the "Possibly not music" screen. Must survive a
     // rescan (PlayerContext's pickNativeFolder carries it forward onto the
@@ -226,7 +246,15 @@ export async function loadLibrary() {
       folderPath: r.folderPath,
       size: r.size,
       possiblyNotMusic: Boolean(r.possiblyNotMusic),
+      // Absent on caches written before this field existed. Falling back
+      // to "has a non-placeholder artist" keeps those tracks classified
+      // sensibly instead of all collapsing to untagged.
+      hasRealTags:
+        r.hasRealTags === undefined
+          ? Boolean(r.artist && r.artist !== "Unknown Artist" && r.title)
+          : Boolean(r.hasRealTags),
       reviewStatus: r.reviewStatus || null,
+      ...(r.metadataOriginal ? { metadataOriginal: r.metadataOriginal } : {}),
       native: true,
       cover: coverObjectUrlFromBytes(r.coverBytes, r.coverFormat),
       coverBytes: r.coverBytes,
@@ -273,6 +301,105 @@ export async function updateLibraryFingerprint(fingerprint) {
     await txDone(tx);
   } catch {
     /* non-fatal — worst case the prompt appears again next launch */
+  } finally {
+    db?.close();
+  }
+}
+
+// --- User-established metadata + the grandfathering baseline ----------
+
+// Writes one track's established metadata. `record` is
+// { origin, fields: {title, artist, album, year}, source }, where source
+// carries the MusicBrainz ids for a verified match and is null for a
+// user declaration.
+export async function saveTrackMetadata(trackId, record) {
+  if (typeof indexedDB === "undefined" || !trackId) return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(TRACK_METADATA_STORE, "readwrite");
+    tx.objectStore(TRACK_METADATA_STORE).put({ trackId, ...record, updatedAt: Date.now() });
+    await txDone(tx);
+  } catch (err) {
+    console.warn("Couldn't persist track metadata:", err);
+  } finally {
+    db?.close();
+  }
+}
+
+// Drops a track back to whatever its file's own tags say.
+export async function clearTrackMetadata(trackId) {
+  if (typeof indexedDB === "undefined" || !trackId) return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(TRACK_METADATA_STORE, "readwrite");
+    tx.objectStore(TRACK_METADATA_STORE).delete(trackId);
+    await txDone(tx);
+  } catch {
+    /* non-fatal */
+  } finally {
+    db?.close();
+  }
+}
+
+// Every stored record as { [trackId]: record }. Never throws — a failure
+// should mean "no established metadata this launch", not a broken library.
+export async function loadAllTrackMetadata() {
+  if (typeof indexedDB === "undefined") return {};
+  let db;
+  try {
+    db = await openDb();
+    const records = await promisifyRequest(
+      db.transaction(TRACK_METADATA_STORE, "readonly").objectStore(TRACK_METADATA_STORE).getAll()
+    );
+    const byId = {};
+    for (const r of records || []) byId[r.trackId] = r;
+    return byId;
+  } catch {
+    return {};
+  } finally {
+    db?.close();
+  }
+}
+
+// The set of track ids that were already in the library before the
+// metadata-authority rules existed. Those tracks keep appearing in the
+// general pool exactly as they always did, with no re-verification: the
+// alternative is retroactively demoting a library that's already stable
+// and in daily use, which would read as the feature breaking the app.
+//
+// Captured once, and the record is written even when the set is empty —
+// "captured, and there was nothing to grandfather" (a fresh install) has
+// to be distinguishable from "never captured", or the first scan on a new
+// device would be grandfathered wholesale and the rules would never apply
+// to anyone.
+export async function loadTrustBaseline() {
+  if (typeof indexedDB === "undefined") return null;
+  let db;
+  try {
+    db = await openDb();
+    const record = await promisifyRequest(
+      db.transaction(META_STORE, "readonly").objectStore(META_STORE).get("trustBaseline")
+    );
+    return record ? new Set(record.trackIds || []) : null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+export async function saveTrustBaseline(trackIds) {
+  if (typeof indexedDB === "undefined") return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(META_STORE, "readwrite");
+    tx.objectStore(META_STORE).put({ key: "trustBaseline", trackIds, capturedAt: Date.now() });
+    await txDone(tx);
+  } catch (err) {
+    console.warn("Couldn't persist trust baseline:", err);
   } finally {
     db?.close();
   }

@@ -1,7 +1,10 @@
 // src/store/PlayerContext.jsx
 // Central player state + real HTML5 Audio playback engine.
 import React, { createContext, useContext, useEffect, useReducer, useRef, useCallback, useMemo } from "react";
-import { parseLibrary, groupIntoAlbums, normalizeKey, albumIdForTrack, coverObjectUrlFromBytes } from "../audio/metadata";
+import {
+  parseLibrary, groupIntoAlbums, normalizeKey, albumIdForTrack, coverObjectUrlFromBytes,
+  applyStoredMetadata, METADATA_ORIGIN,
+} from "../audio/metadata";
 import { Capacitor } from "@capacitor/core";
 import {
   scanNativeFolder,
@@ -27,6 +30,11 @@ import {
   loadSettings as loadCachedSettings,
   loadLibraryFingerprint,
   updateLibraryFingerprint,
+  loadAllTrackMetadata,
+  saveTrackMetadata as persistTrackMetadata,
+  clearTrackMetadata as removePersistedTrackMetadata,
+  loadTrustBaseline,
+  saveTrustBaseline,
 } from "../audio/libraryCache";
 import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
 import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffects";
@@ -129,6 +137,14 @@ const initialState = {
   // LOAD_LIBRARY dispatch, so a rescan or cache hydration never has a
   // chance to show the embedded cover before the override reasserts.
   coverOverrides: {},
+  // { [trackId]: { origin, fields, source } } — metadata the user
+  // established via the cleaner, loaded once on launch and re-applied over
+  // every LOAD_LIBRARY the same way coverOverrides are, since a rescan
+  // rebuilds the track records from the files and would otherwise drop it.
+  trackMetadata: {},
+  // Track ids that predate the authority rules and stay in the general
+  // pool unconditionally. A Set, or null until it's been loaded.
+  trustBaseline: null,
   playlists: [{ id: FAVORITES_PLAYLIST_ID, name: "Favourite Tunes", effectId: null, trackIds: [] }],
   studioStatus: null,
   trackOrderStatus: null,
@@ -168,6 +184,15 @@ function shuffleArray(arr) {
 // Overlays `overrides` ({ [albumId]: objectUrl }) onto `tracks`, only
 // touching tracks whose album actually has an override — cheap no-op for
 // the common case where overrides is empty or unrelated to most tracks.
+// Stamps every track with its resolved metadata origin, applying any
+// stored verified/declared fields on top. Runs on the whole library at
+// LOAD_LIBRARY, exactly like applyCoverOverrides — a rescan produces raw
+// tracks straight from the files, so both have to be reapplied or the
+// user's own data silently disappears on every rescan.
+function applyTrackMetadata(tracks, trackMetadata, trustBaseline) {
+  return tracks.map((t) => applyStoredMetadata(t, trackMetadata?.[t.id], trustBaseline));
+}
+
 function applyCoverOverrides(tracks, overrides) {
   if (!overrides || Object.keys(overrides).length === 0) return tracks;
   return tracks.map((t) => {
@@ -188,7 +213,10 @@ function reducer(state, action) {
       // Freshly-scanned or cache-hydrated tracks always carry their
       // embedded cover — reapply any user overrides on top so a rescan or
       // a later launch doesn't silently drop back to the embedded art.
-      const library = applyCoverOverrides(action.tracks, state.coverOverrides);
+      const library = applyCoverOverrides(
+        applyTrackMetadata(action.tracks, state.trackMetadata, state.trustBaseline),
+        state.coverOverrides
+      );
       const albums = groupIntoAlbums(library);
       return {
         ...state,
@@ -440,6 +468,24 @@ function reducer(state, action) {
     // populated from cache hydration, or still empty pending a scan;
     // either way LOAD_LIBRARY also reapplies coverOverrides, so ordering
     // between the two doesn't matter for correctness).
+    // Both landed before any LOAD_LIBRARY on a normal launch, but a rescan
+    // can dispatch LOAD_LIBRARY again later, which reapplies them from
+    // state — so these only need to re-stamp the library they find.
+    case "SET_TRACK_METADATA_STORE": {
+      const { trackMetadata, trustBaseline } = action;
+      const library = applyTrackMetadata(state.library, trackMetadata, trustBaseline);
+      return { ...state, trackMetadata, trustBaseline, library, albums: groupIntoAlbums(library) };
+    }
+    case "SET_TRACK_METADATA": {
+      const { trackId, record } = action;
+      const trackMetadata = { ...state.trackMetadata };
+      if (record) trackMetadata[trackId] = record;
+      else delete trackMetadata[trackId];
+      const library = state.library.map((t) =>
+        t.id === trackId ? applyStoredMetadata(t, trackMetadata[trackId], state.trustBaseline) : t
+      );
+      return { ...state, trackMetadata, library, albums: groupIntoAlbums(library) };
+    }
     case "SET_COVER_OVERRIDES": {
       const coverOverrides = action.overrides;
       const library = applyCoverOverrides(state.library, coverOverrides);
@@ -1169,6 +1215,22 @@ export function PlayerProvider({ children }) {
     if (pending?.fingerprint) await updateLibraryFingerprint(pending.fingerprint);
   }, []);
 
+  // Establishes metadata for a track — either a confirmed online match
+  // (origin "verified") or the user's own statement (origin "declared").
+  // Writes through to its own store first so a rescan or relaunch keeps
+  // it, then updates state; the store is the source of truth, state is
+  // the projection.
+  const setTrackMetadataRecord = useCallback(async (trackId, record) => {
+    await persistTrackMetadata(trackId, record);
+    dispatch({ type: "SET_TRACK_METADATA", trackId, record });
+  }, []);
+
+  // Reverts a track to whatever its file's own tags say.
+  const clearTrackMetadataRecord = useCallback(async (trackId) => {
+    await removePersistedTrackMetadata(trackId);
+    dispatch({ type: "SET_TRACK_METADATA", trackId, record: null });
+  }, []);
+
   // Hydrates straight from the IndexedDB cache when there's one — no
   // filesystem scanning at all in that case. A real scan only happens if
   // there's no cache yet: either a first-ever run (surfaced via
@@ -1197,6 +1259,13 @@ export function PlayerProvider({ children }) {
     }
     dispatch({ type: "SET_COVER_OVERRIDES", overrides });
 
+    // Must land before the cache-hydration branch below dispatches
+    // LOAD_LIBRARY, since that's what stamps every track's origin — if
+    // these arrived afterwards the library would render once as
+    // unidentified and then correct itself.
+    const trackMetadata = await loadAllTrackMetadata();
+    let trustBaseline = await loadTrustBaseline();
+
     // Same idea for playlists (including Favourite Tunes) — they only
     // ever lived in React state before, so a full process kill (not just
     // backgrounding) wiped them. Must also land before the cache-hydration
@@ -1211,6 +1280,20 @@ export function PlayerProvider({ children }) {
     playlistsHydratedRef.current = true;
 
     const cached = await loadCachedLibrary();
+
+    // First launch after this feature shipped: everything already in the
+    // library is grandfathered wholesale, so a stable library in daily use
+    // doesn't suddenly lose tracks from the Tracks tab pending
+    // re-verification. Written even when there's nothing to grandfather
+    // (fresh install) so "captured, empty" stays distinguishable from
+    // "never captured" — see loadTrustBaseline.
+    if (trustBaseline === null) {
+      const ids = cached?.tracks?.map((t) => t.id) || [];
+      trustBaseline = new Set(ids);
+      await saveTrustBaseline(ids);
+    }
+    dispatch({ type: "SET_TRACK_METADATA_STORE", trackMetadata, trustBaseline });
+
     if (cached && cached.tracks.length > 0) {
       dispatch({ type: "LOAD_LIBRARY", tracks: cached.tracks, folderName: cached.folderPath });
 
@@ -1552,6 +1635,8 @@ export function PlayerProvider({ children }) {
     pickNativeFolder,
     checkForNewMusic,
     dismissNewMusicFound,
+    setTrackMetadataRecord,
+    clearTrackMetadataRecord,
     // Called by WelcomeOnboarding once the user grants storage access and
     // returns to the app — kicks off the exact same hydrate-or-scan flow
     // the mount effect runs, which never got to on a fresh install/
@@ -1807,6 +1892,7 @@ export function PlayerProvider({ children }) {
     state.eqPreset, state.playlists, state.studioStatus, state.trackOrderStatus, state.queueToast,
     state.sleepTimerMinutes, state.sleepTimerEndsAt,
     state.coverOverrides, state.backgroundKillNotice, state.newMusicFound, state.checkingForNewMusic,
+    state.trackMetadata, state.trustBaseline,
   ]);
 
   return (

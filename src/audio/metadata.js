@@ -131,6 +131,14 @@ function buildTrackFromTags(tags, { id, name, addedAt, sizeBytes, extra }) {
   const hasAnyTag = Boolean((tags.title && tags.title.trim()) || (tags.artist && tags.artist.trim()) || hasAlbumTag);
   const possiblyNotMusic = !hasAnyTag && isLikelyShortRecording(sizeBytes);
 
+  // Stricter than hasAnyTag above, and for a different job. hasAnyTag asks
+  // "is this plausibly music at all"; this asks "does this file say enough
+  // about itself to stand on its own in a flat list of every track you
+  // own". A title with no artist doesn't — you can't tell what it is next
+  // to 700 siblings — so this deliberately requires both. See
+  // METADATA_ORIGIN and the general-pool rule that consumes it.
+  const hasRealTags = Boolean(tags.title && tags.title.trim() && tags.artist && tags.artist.trim());
+
   return {
     id,
     title,
@@ -147,6 +155,7 @@ function buildTrackFromTags(tags, { id, name, addedAt, sizeBytes, extra }) {
     coverBytes: coverData?.bytes || null,
     coverFormat: coverData?.format || null,
     possiblyNotMusic,
+    hasRealTags,
     ...extra,
   };
 }
@@ -186,6 +195,96 @@ export async function parseLibrary(fileList) {
     tracks.push(await parseTrackFile(file));
   }
   return tracks;
+}
+
+// Where a track's metadata actually came from, and therefore how much
+// weight it carries. Introduced for the metadata cleaner; see
+// PLAN-metadata-cleaner.md.
+//
+//   VERIFIED  matched against MusicBrainz and confirmed by the user.
+//   DECLARED  the user stated it outright, with nothing to check it
+//             against. Authoritative for *display* — if they took the
+//             trouble to type it, that's what they want to see — but
+//             deliberately not treated as identification, because nothing
+//             corroborates it.
+//   EMBEDDED  the file's own tags, and they're substantial enough to
+//             identify the track (see hasRealTags).
+//   UNKNOWN   nothing usable: no verified match, nothing declared, and
+//             tags too thin to identify it.
+//
+// TRUSTED is a fifth, deliberately grandfathered state — see
+// loadTrustBaseline in libraryCache.js. Tracks that were already in the
+// library before any of this shipped keep their existing behaviour
+// untouched rather than being retroactively demoted, which would be a
+// disruptive regression to a library already in daily use.
+export const METADATA_ORIGIN = {
+  VERIFIED: "verified",
+  DECLARED: "declared",
+  EMBEDDED: "embedded",
+  TRUSTED: "trusted",
+  UNKNOWN: "unknown",
+};
+
+// Resolves a track's origin from the three inputs that can establish it,
+// in precedence order: an explicit record the cleaner wrote, then the
+// grandfathering baseline, then the file's own tags.
+export function resolveMetadataOrigin(track, declaredRecord, trustBaseline) {
+  if (declaredRecord?.origin === METADATA_ORIGIN.VERIFIED) return METADATA_ORIGIN.VERIFIED;
+  if (declaredRecord?.origin === METADATA_ORIGIN.DECLARED) return METADATA_ORIGIN.DECLARED;
+  if (trustBaseline?.has(track.id)) return METADATA_ORIGIN.TRUSTED;
+  return track.hasRealTags ? METADATA_ORIGIN.EMBEDDED : METADATA_ORIGIN.UNKNOWN;
+}
+
+// Applies a stored metadata record (verified match or user declaration)
+// over a freshly-scanned or cache-hydrated track, and stamps the resolved
+// origin. Returns the track untouched apart from `metadataOrigin` when
+// there's no record, so this is safe to run across the whole library.
+export function applyStoredMetadata(track, declaredRecord, trustBaseline) {
+  const metadataOrigin = resolveMetadataOrigin(track, declaredRecord, trustBaseline);
+
+  // What the file itself said, snapshotted the first time anything
+  // overrides it. Two paths (deleteTrack, reviewTrack) re-persist
+  // state.library — the *merged* view — back into the library cache, so
+  // overridden values can end up baked into a track record. Without a
+  // snapshot, clearing a record later would leave those baked values in
+  // place and "revert" wouldn't actually revert until the next full
+  // rescan. Keeping the original makes applying idempotent and undoing
+  // exact, whatever happens to be in the cache.
+  const original = track.metadataOriginal || {
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    year: track.year,
+    hasAlbumTag: track.hasAlbumTag,
+  };
+
+  if (!declaredRecord?.fields) {
+    // No record: restore the file's own values and drop the snapshot, so
+    // the track goes back to being plain file-derived data.
+    const { metadataOriginal: _drop, ...rest } = track;
+    return {
+      ...rest,
+      ...original,
+      albumKey: normalizeKey(original.album),
+      metadataOrigin,
+      metadataSource: null,
+    };
+  }
+
+  const f = declaredRecord.fields;
+  const album = f.album || original.album;
+  return {
+    ...track,
+    metadataOriginal: original,
+    title: f.title || original.title,
+    artist: f.artist || original.artist,
+    album,
+    albumKey: normalizeKey(album),
+    hasAlbumTag: f.album ? true : original.hasAlbumTag,
+    year: f.year || original.year,
+    metadataOrigin,
+    metadataSource: declaredRecord.source || null,
+  };
 }
 
 // A track flagged possiblyNotMusic stays out of albums/library views (and
