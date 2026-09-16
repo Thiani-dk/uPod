@@ -60,8 +60,10 @@ export default function AddToPlaylistModal({ track, onClose }) {
             <h3 className="modal-title" style={{ fontSize: 15 }}>Add to playlist</h3>
             <div className="settings-row-sub">{track.title}</div>
           </div>
-          <button className="modal-close-btn" onClick={onClose}>
-            <X size={16} />
+          {/* Bare-icon close, the same pattern the sidebar uses — no
+              box, muted at rest, accent on press. */}
+          <button className="bare-close" onClick={onClose} aria-label="Close">
+            <X size={22} />
           </button>
         </div>
 

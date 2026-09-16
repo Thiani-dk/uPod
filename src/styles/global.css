@@ -203,8 +203,13 @@ html, body, #root { height: 100%; margin: 0; }
    on the accent-tinted surface; shifts to the accent colour on interaction
    for feedback. Touch area comes from the button's own padding, not a
    visible background; negative margins keep it visually in the corner.
-   Display (flex vs none) is left to .only-mobile. */
-.sidebar-close {
+   Display (flex vs none) is left to .only-mobile.
+
+   .bare-close is the same pattern for close buttons outside the sidebar
+   (e.g. the playlist picker's header) — declared together rather than
+   copied, so the two can't drift apart. */
+.sidebar-close,
+.bare-close {
   border: none;
   background: none;
   padding: 8px;
@@ -220,10 +225,18 @@ html, body, #root { height: 100%; margin: 0; }
 }
 .sidebar-close:hover,
 .sidebar-close:focus-visible,
-.sidebar-close:active {
+.sidebar-close:active,
+.bare-close:hover,
+.bare-close:focus-visible,
+.bare-close:active {
   color: var(--accent);
   outline: none;
 }
+/* Same pattern, used outside the sidebar. It needs its own display and
+   margins because .sidebar-close deliberately leaves display to
+   .only-mobile and uses negative margins to sit in the drawer's corner —
+   neither of which applies to a modal header. */
+.bare-close { display: flex; margin: -8px -6px -8px 0; }
 .nav-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
 .nav-item { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 10px; border: none; background: transparent; color: var(--text-dim); font-size: 13.5px; font-weight: 500; cursor: pointer; text-align: left; transition: background .15s, color .15s; }
 .nav-item:hover { background: var(--panel); color: var(--text); }
