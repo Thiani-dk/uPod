@@ -1734,3 +1734,144 @@ html, body, #root { height: 100%; margin: 0; }
   .stat-mini-grid { grid-template-columns: repeat(2, 1fr); }
   .stat-hero-value { font-size: 28px; }
 }
+
+/* ============================================================
+   Metadata cleaner — conversational track identification
+   A log of turns rather than a form; see MetadataCleaner.jsx for why.
+   Taller than the other sheets because a conversation needs room to
+   accumulate, and the composer has to coexist with the keyboard.
+   ============================================================ */
+.cleaner-sheet { max-width: 460px; max-height: 88vh; }
+
+/* This WebView renders translucent surfaces as see-through holes that
+   page text bleeds through (see the .native-platform notes at the top of
+   this file), and a chat log is nothing but text over a surface — the
+   worst case for it. So native gets a fully opaque background rather
+   than the shared --panel-strong translucency. */
+.upod-root.native-platform .cleaner-sheet {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: var(--sidebar-solid);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--sidebar-border-solid));
+}
+
+.cleaner-filename {
+  padding: 8px 20px 10px;
+  font-size: 11px;
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.cleaner-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.cleaner-bubble {
+  max-width: 88%;
+  padding: 9px 12px;
+  border-radius: 14px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.cleaner-bot { align-self: flex-start; background: var(--panel); border-bottom-left-radius: 5px; }
+.cleaner-user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 88%, #fff);
+  color: #fff;
+  border-bottom-right-radius: 5px;
+}
+.upod-root.native-platform .cleaner-bot {
+  background: color-mix(in srgb, var(--accent) 7%, var(--sidebar-solid));
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--sidebar-border-solid));
+}
+.cleaner-thinking { display: flex; align-items: center; gap: 7px; opacity: 0.7; font-style: italic; }
+
+.cleaner-candidates { display: flex; flex-direction: column; gap: 7px; align-self: stretch; }
+
+.cleaner-candidate {
+  text-align: left;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.12s;
+}
+.cleaner-candidate:active { transform: scale(0.985); }
+.cleaner-candidate:disabled { opacity: 0.45; cursor: default; }
+.upod-root.native-platform .cleaner-candidate {
+  background: color-mix(in srgb, var(--accent) 5%, var(--sidebar-solid));
+  border-color: color-mix(in srgb, var(--accent) 16%, var(--sidebar-border-solid));
+}
+.cleaner-candidate-title { font-size: 13px; font-weight: 650; }
+.cleaner-candidate-sub { font-size: 11.5px; opacity: 0.7; margin-top: 2px; }
+/* Usually the only thing separating identically-named candidates. */
+.cleaner-candidate-note { font-size: 10.5px; opacity: 0.55; margin-top: 3px; font-style: italic; }
+
+.cleaner-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+/* The same row of choices, but rendered inside the log next to the turn
+   it belongs to rather than pinned to the sheet's footer. */
+.cleaner-actions-inline { padding: 2px 0 4px; border-top: none; align-self: flex-start; }
+.cleaner-primary {
+  border-color: var(--accent);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 650;
+}
+
+.cleaner-composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.cleaner-composer input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: inherit;
+}
+.cleaner-composer input:focus { outline: none; border-color: var(--accent); }
+.upod-root.native-platform .cleaner-composer input {
+  background: color-mix(in srgb, var(--accent) 6%, var(--sidebar-solid));
+}
+.cleaner-send {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.cleaner-send:disabled { opacity: 0.4; cursor: default; }
