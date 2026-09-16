@@ -256,6 +256,8 @@ export function applyStoredMetadata(track, declaredRecord, trustBaseline) {
     album: track.album,
     year: track.year,
     hasAlbumTag: track.hasAlbumTag,
+    track: track.track,
+    trackConfirmed: track.trackConfirmed,
   };
 
   if (!declaredRecord?.fields) {
@@ -282,6 +284,12 @@ export function applyStoredMetadata(track, declaredRecord, trustBaseline) {
     albumKey: normalizeKey(album),
     hasAlbumTag: f.album ? true : original.hasAlbumTag,
     year: f.year || original.year,
+    // A track number the user set by hand is as confirmed as one the
+    // track-order fixer wrote, so it suppresses the "unconfirmed order"
+    // treatment the same way.
+    ...(f.track !== undefined && f.track !== null
+      ? { track: f.track, trackConfirmed: true }
+      : {}),
     metadataOrigin,
     metadataSource: declaredRecord.source || null,
   };

@@ -9,6 +9,7 @@ import PlayNow from "./PlayNow";
 import TrackActionsMenu from "../components/TrackActionsMenu";
 import AddToPlaylistModal from "../components/AddToPlaylistModal";
 import MetadataEditModal from "../components/MetadataEditModal";
+import MetadataCleaner from "../components/MetadataCleaner";
 
 const TABS = [
   { id: "playnow", label: "Play Now" },
@@ -19,7 +20,8 @@ const TABS = [
 
 export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
   const { albums, playlists, library, coverOverrides, selectedFolderName, loadingLibrary, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
-  const { pickFolder, pickNativeFolder, playRandomMixFrom, addTrackToPlaylist, removeTrackFromPlaylist } = usePlayerActions();
+  const { pickFolder, pickNativeFolder, playRandomMixFrom, addTrackToPlaylist, removeTrackFromPlaylist, commitCleanerResult } =
+    usePlayerActions();
   const [tab, setTab] = useState("playnow");
   // The persistent top search bar is the ONLY search input on this screen.
   // It spans the whole library (Artists/Albums/Playlists/Tracks) regardless
@@ -30,6 +32,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   const [searchQuery, setSearchQuery] = useState("");
   const [menuTrack, setMenuTrack] = useState(null);
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
+  const [cleanTrack, setCleanTrack] = useState(null);
   const [editTrack, setEditTrack] = useState(null);
   const inputRef = useRef(null);
 
@@ -392,6 +395,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
           onFilterArtist={filterByArtist}
           onAddToPlaylist={setAddToPlaylistTrack}
           onEdit={setEditTrack}
+          onClean={setCleanTrack}
         />
       )}
       {addToPlaylistTrack && (
@@ -399,6 +403,13 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
       )}
       {editTrack && (
         <MetadataEditModal track={editTrack} onClose={() => setEditTrack(null)} />
+      )}
+      {cleanTrack && (
+        <MetadataCleaner
+          track={cleanTrack}
+          onClose={() => setCleanTrack(null)}
+          onCommit={(record) => commitCleanerResult(cleanTrack.id, record)}
+        />
       )}
     </div>
   );

@@ -36,6 +36,7 @@ import {
   loadTrustBaseline,
   saveTrustBaseline,
 } from "../audio/libraryCache";
+import { fetchCoverArt } from "../online/coverArt";
 import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
 import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffects";
 import { audioBufferToWavBlob } from "../audio/wav";
@@ -580,22 +581,6 @@ function reducer(state, action) {
       if (queue.length === 0) return state;
       const queueIndex = Math.min(Math.max(action.index, 0), queue.length - 1);
       return { ...state, queue, queueIndex, currentTime: action.position || 0 };
-    }
-    case "UPDATE_TRACK_METADATA": {
-      const { trackId, updates } = action;
-      const library = state.library.map((t) => {
-        if (t.id !== trackId) return t;
-        const next = { ...t, ...updates };
-        if (updates.album !== undefined) {
-          next.hasAlbumTag = true;
-          next.albumKey = normalizeKey(updates.album);
-        }
-        if (updates.track !== undefined) {
-          next.trackConfirmed = true;
-        }
-        return next;
-      });
-      return { ...state, library, albums: groupIntoAlbums(library) };
     }
     default:
       return state;
@@ -1221,9 +1206,65 @@ export function PlayerProvider({ children }) {
   // it, then updates state; the store is the source of truth, state is
   // the projection.
   const setTrackMetadataRecord = useCallback(async (trackId, record) => {
-    await persistTrackMetadata(trackId, record);
-    dispatch({ type: "SET_TRACK_METADATA", trackId, record });
+    // Stamp what the track counted as *before* this record existed.
+    // Editing a track's info must never be what removes it from the
+    // Tracks tab: a track that was already there (grandfathered, or
+    // identifiable from its own tags) stays there after the user tidies
+    // its title. Only a file that was never identifiable in the first
+    // place is held back by a declaration. The pool rule reads this —
+    // see isInGeneralPool.
+    const prior = libraryRef.current.find((t) => t.id === trackId);
+    const stamped = {
+      ...record,
+      priorOrigin: record.priorOrigin || prior?.metadataOrigin || METADATA_ORIGIN.UNKNOWN,
+    };
+    await persistTrackMetadata(trackId, stamped);
+    dispatch({ type: "SET_TRACK_METADATA", trackId, record: stamped });
   }, []);
+
+  // The hand-edit path (MetadataEditModal). Previously this only changed
+  // state.library, so an edit silently evaporated on the next rescan or
+  // relaunch — the values lived nowhere. Routing it through the same
+  // store as the cleaner fixes that and makes "the user told us" one
+  // concept with one persistence path, rather than two mechanisms with
+  // different trust levels for the same act.
+  const declareTrackMetadata = useCallback(
+    (trackId, { title, artist, album, track }) =>
+      setTrackMetadataRecord(trackId, {
+        origin: METADATA_ORIGIN.DECLARED,
+        fields: { title, artist, album, track },
+        source: null,
+      }),
+    [setTrackMetadataRecord]
+  );
+
+  // Commits a result from the cleaner conversation. Cover art is fetched
+  // only for a confirmed online match and is strictly best-effort — CAA
+  // coverage is patchy, so a miss is the normal case and must never turn
+  // a good match into a failure. It's applied as a cover override, which
+  // is already the store that survives a rescan.
+  const commitCleanerResult = useCallback(
+    async (trackId, record) => {
+      await setTrackMetadataRecord(trackId, record);
+      if (record.origin !== METADATA_ORIGIN.VERIFIED || !record.source) return;
+      try {
+        const art = await fetchCoverArt(record.source);
+        if (!art) return;
+        const updated = libraryRef.current.find((t) => t.id === trackId);
+        if (!updated) return;
+        const albumId = albumIdForTrack(updated);
+        await persistCoverOverride(albumId, art.bytes, art.format);
+        dispatch({
+          type: "SET_ALBUM_COVER_OVERRIDE",
+          albumId,
+          cover: coverObjectUrlFromBytes(art.bytes, art.format),
+        });
+      } catch (err) {
+        console.warn("Couldn't fetch cover art for the match:", err);
+      }
+    },
+    [setTrackMetadataRecord]
+  );
 
   // Reverts a track to whatever its file's own tags say.
   const clearTrackMetadataRecord = useCallback(async (trackId) => {
@@ -1637,6 +1678,8 @@ export function PlayerProvider({ children }) {
     dismissNewMusicFound,
     setTrackMetadataRecord,
     clearTrackMetadataRecord,
+    declareTrackMetadata,
+    commitCleanerResult,
     // Called by WelcomeOnboarding once the user grants storage access and
     // returns to the app — kicks off the exact same hydrate-or-scan flow
     // the mount effect runs, which never got to on a fresh install/
@@ -1742,8 +1785,6 @@ export function PlayerProvider({ children }) {
       loadFont(fontId);
       dispatch({ type: "SET_FONT_FAMILY", fontId });
     },
-    updateTrackMetadata: (trackId, updates) =>
-      dispatch({ type: "UPDATE_TRACK_METADATA", trackId, updates }),
     // In-app only — does not write back to the file's embedded ID3
     // picture. `bytes`/`format` are the picked image's raw data, used to
     // persist the override (downscaled the same way embedded thumbnails

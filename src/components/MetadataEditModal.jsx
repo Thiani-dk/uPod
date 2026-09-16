@@ -1,7 +1,10 @@
 // src/components/MetadataEditModal.jsx
-// In-memory metadata editing — never writes back to the original file on
-// disk, same platform constraint every other in-app change (Studio render,
-// track-order fix) already operates under.
+// Hand-editing a track's info. Never writes back to the original file on
+// disk, same platform constraint every other in-app change (Studio
+// render, track-order fix) already operates under — but it is persisted
+// now, in the same store the cleaner writes to. It used to change
+// state.library only, so an edit quietly evaporated on the next rescan or
+// relaunch because the values lived nowhere.
 import React, { useState } from "react";
 import { X } from "lucide-react";
 import { usePlayerActions } from "../store/PlayerContext";
@@ -9,14 +12,14 @@ import useBackButtonClose from "../utils/useBackButtonClose";
 
 export default function MetadataEditModal({ track, onClose }) {
   useBackButtonClose(onClose);
-  const { updateTrackMetadata } = usePlayerActions();
+  const { declareTrackMetadata } = usePlayerActions();
   const [title, setTitle] = useState(track.title);
   const [artist, setArtist] = useState(track.artist);
   const [album, setAlbum] = useState(track.album);
   const [trackNum, setTrackNum] = useState(track.track ? String(track.track) : "");
 
   function handleSave() {
-    updateTrackMetadata(track.id, {
+    declareTrackMetadata(track.id, {
       title: title.trim() || track.title,
       artist: artist.trim() || track.artist,
       album: album.trim() || track.album,

@@ -1,12 +1,12 @@
 // src/components/TrackActionsMenu.jsx
 import React, { useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { X, Play, ListPlus, ListMusic, Bookmark, Disc3, User, FolderPlus, Pencil, Trash2 } from "lucide-react";
+import { X, Play, ListPlus, ListMusic, Bookmark, Disc3, User, FolderPlus, Pencil, Trash2, Sparkles } from "lucide-react";
 import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
 import useBackButtonClose from "../utils/useBackButtonClose";
 import DeleteTrackModal from "./DeleteTrackModal";
 
-export default function TrackActionsMenu({ track, onClose, onPlay, onOpenAlbum, onFilterArtist, onAddToPlaylist, onEdit }) {
+export default function TrackActionsMenu({ track, onClose, onPlay, onOpenAlbum, onFilterArtist, onAddToPlaylist, onEdit, onClean }) {
   useBackButtonClose(onClose);
   const { albums, playlists } = usePlayerState();
   const { playNext, addToQueue, addTrackToPlaylist, removeTrackFromPlaylist, deleteTrack } = usePlayerActions();
@@ -51,6 +51,10 @@ export default function TrackActionsMenu({ track, onClose, onPlay, onOpenAlbum, 
     { label: "Artist", icon: User, onClick: () => { onFilterArtist(track.artist); onClose(); } },
     { label: "Add to Playlist", icon: FolderPlus, onClick: () => { onAddToPlaylist(track); onClose(); } },
     { label: "Edit", icon: Pencil, onClick: () => { onEdit(track); onClose(); } },
+    // Sits next to Edit deliberately: Edit is "I know what this is, fix
+    // the text", Clean up is "I don't know what this is, help me work it
+    // out". Different jobs, adjacent enough to find.
+    { label: "Clean up info", icon: Sparkles, onClick: () => { onClean(track); onClose(); } },
     ...(canDelete
       ? [{ label: "Delete from device", icon: Trash2, danger: true, onClick: () => setConfirmingDelete(true) }]
       : []),
