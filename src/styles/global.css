@@ -262,7 +262,15 @@ html, body, #root { height: 100%; margin: 0; }
 .icon-btn:disabled { opacity: 0.35; cursor: default; }
 .only-mobile { display: none; }
 .content { flex: 1; overflow-y: auto; padding: 0 20px 100px; }
-.np-screen { display: flex; flex-direction: column; align-items: center; padding-top: 6px; max-width: 380px; margin: 0 auto; }
+.np-screen { display: flex; flex-direction: column; align-items: center; padding-top: 6px; max-width: 380px; margin: 0 auto;
+  /* Subpixel-antialiased text on this WebView renders the light theme's
+     dark-on-light type slightly heavy and soft. Greyscale smoothing is
+     what the rest of the type scale was designed against; no sizes or
+     weights change here, only how they're rasterised. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
 /* Two lines, not one run-on string: the label is a category heading and
    the context name is the actual content, so they get different weight,
    size and colour rather than sharing one uppercase treatment. The name
@@ -271,7 +279,13 @@ html, body, #root { height: 100%; margin: 0; }
 .np-playing-from { width: 100%; text-align: center; margin-bottom: 8px; display: flex; flex-direction: column; align-items: center; gap: 1px; }
 .np-playing-from-label { font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-dim); opacity: 0.75; }
 .np-playing-from-name { font-size: 12.5px; font-weight: 700; letter-spacing: 0.01em; color: var(--text); max-width: 82%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.np-art { width: 100%; aspect-ratio: 1 / 1; border-radius: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 20px 50px -12px color-mix(in srgb, var(--accent) 55%, transparent), var(--shadow); position: relative; border: var(--glass-border-top); overflow: hidden; }
+/* Capped against viewport height, not just the column width. The art is
+   the biggest consumer of vertical space on this screen, and the action
+   fan now unfolds downward beneath the transport cluster — at full width
+   on a 320dp phone there wasn't room for the fan's last row, so the speed
+   strip fell off the bottom edge. Squaring off a little art is a better
+   trade than a menu that needs scrolling to reach. */
+.np-art { width: min(100%, 33vh); aspect-ratio: 1 / 1; border-radius: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 20px 50px -12px color-mix(in srgb, var(--accent) 55%, transparent), var(--shadow); position: relative; border: var(--glass-border-top); overflow: hidden; }
 .np-art::before { content: ""; position: absolute; inset: 0; background: var(--specular); mix-blend-mode: overlay; }
 .np-art-immersive-hint { position: absolute; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 8px; border: none; background: rgba(0,0,0,0.28); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .np-meta { width: 100%; text-align: left; margin-top: 10px; display: flex; flex-direction: column; }
@@ -280,108 +294,140 @@ html, body, #root { height: 100%; margin: 0; }
 .np-title { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.15; }
 .np-artist { display: block; border: none; background: none; padding: 0; text-align: left; color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; margin-bottom: 4px; cursor: pointer; }
 .np-progress { width: 100%; margin-top: 10px; }
+/* A thinner line and a smaller thumb than the browser default, which read
+   as chunky next to the rest of the screen. Taking over the appearance
+   switches off the native accent-color fill, so the filled portion is a
+   gradient stop driven by --seek-pct from the component. The hit area
+   stays the full input height — only the painted track is thin, so this
+   is no harder to grab. */
+.np-progress input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.np-progress input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--seek-pct, 0%),
+    color-mix(in srgb, var(--text-dim) 28%, transparent) var(--seek-pct, 0%)
+  );
+}
+.np-progress input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--accent);
+  /* Centres an 11px thumb on a 3px track. */
+  margin-top: -4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform .12s ease;
+}
+.np-progress input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.25); }
+.np-progress input[type="range"]:focus { outline: none; }
 .np-progress-track { height: 4px; background: var(--panel); border-radius: 4px; overflow: hidden; }
 .np-progress-fill { height: 100%; background: var(--accent); border-radius: 4px; }
 .np-time-row { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-dim); margin-top: 6px; }
 .np-transport-row { width: 100%; display: flex; justify-content: center; margin-top: 8px; }
 .np-transport-row .tp { margin-top: 0; }
 .np-screen .speed-stepper { margin-top: 6px; }
-/* Icon-only action row with a fan-out overflow.
-   The row is the positioning context for the floating panel, so the
-   panel's transform origin can sit over the ellipsis itself. */
-.np-actions { position: relative; display: flex; gap: 10px; margin-top: 12px; justify-content: center; align-items: center; }
+/* Now Playing action fan.
+   At rest: one ellipsis, nothing else. Open: six bare icon buttons unfold
+   in a row directly beneath it, with the speed strip below them.
 
-.np-icon-btn {
-  width: 40px; height: 40px;
-  display: flex; align-items: center; justify-content: center;
+   It unfolds DOWNWARD deliberately. An earlier version opened upward and
+   had to be wrapped in an opaque card, because everything above this row
+   — transport controls, progress bar, title, artwork — is occupied, and
+   bare icons landed on top of it (the EQ icon sat square on the play
+   button). The card hid that collision rather than solving it. Below the
+   row is genuinely empty, so expanding into it needs no card at all, and
+   the icons can stay bare. */
+.np-actions {
+  position: relative;
+  /* Matches the rhythm the rest of the column uses (.np-meta,
+     .np-progress) instead of inventing a value — the ellipsis previously
+     sat hard against the transport controls. */
+  margin-top: 10px;
+  display: flex;
+  justify-content: center;
+}
+
+/* Bare-icon treatment, the same idea as .sidebar-close: no box, no
+   border, muted at rest, accent on press, touch area from padding. */
+.np-fan-toggle,
+.np-fan-item {
+  border: none;
+  background: none;
+  padding: 0;
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
-  border: var(--glass-border-top);
-  background: var(--panel);
-  color: var(--text);
+  color: var(--text-dim);
   cursor: pointer;
   flex-shrink: 0;
-  /* Only colour/border transition here. The fan animation below is
-     restricted to transform+opacity, and this must not quietly
-     reintroduce a layout- or filter-animating property alongside it. */
-  transition: color .15s ease, border-color .15s ease, background .15s ease;
   -webkit-tap-highlight-color: transparent;
+  transition: color .15s ease;
 }
-.upod-root.native-platform .np-icon-btn {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  background: color-mix(in srgb, var(--accent) 8%, var(--sidebar-solid));
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--sidebar-border-solid));
-}
-.np-icon-btn:active { transform: scale(0.93); }
-.np-icon-active { color: var(--accent); border-color: var(--accent); }
+.np-fan-toggle:hover,
+.np-fan-toggle:focus-visible,
+.np-fan-toggle:active,
+.np-fan-item:hover,
+.np-fan-item:focus-visible,
+.np-fan-item:active { color: var(--accent); outline: none; }
+.np-icon-active { color: var(--accent); }
 .np-icon-danger { color: #e5484d; }
+.np-icon-danger:hover,
+.np-icon-danger:focus-visible,
+.np-icon-danger:active { color: #e5484d; }
 
-/* The fan, as a real floating surface rather than bare icons.
-   Confirmed on-device that loose icons don't work here: there is no empty
-   space above this row — the transport controls, progress bar, title and
-   artwork all live there — so the items landed on top of them, with the
-   EQ icon square over the play button. Overlaying content is fine for a
-   menu, but only if it reads as a layer, which means its own opaque
-   surface and elevation.
-
-   Anchored bottom-right with a matching transform-origin so it grows out
-   of the ellipsis. Right-aligned rather than centred because the panel is
-   as wide as the speed strip inside it; centring made the icons drift to
-   the middle of the screen, away from the button they came from. */
-.np-overflow-panel {
+/* Absolutely positioned so the collapsed state costs no layout at all —
+   the row stays one button tall whether the fan is open or shut. */
+.np-fan {
   position: absolute;
-  right: 0;
-  bottom: calc(100% + 10px);
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
-  flex-direction: column-reverse;
+  flex-direction: column;
   align-items: center;
-  gap: 9px;
-  padding: 11px 11px;
-  border-radius: 20px;
-  background: var(--panel-strong);
-  border: var(--glass-border-top);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
-  transform-origin: bottom right;
-  opacity: 0;
-  transform: translate3d(0, 10px, 0) scale(0.82);
-  transition: opacity .15s ease, transform .22s cubic-bezier(0.2, 0.9, 0.3, 1.1);
-  pointer-events: none;
+  gap: 8px;
+  padding-top: 6px;
   z-index: 5;
 }
-/* Opaque on native: this WebView renders translucent surfaces as holes
-   that the artwork and title behind them bleed through, which is exactly
-   what sits behind this panel. */
-.upod-root.native-platform .np-overflow-panel {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  background: var(--sidebar-solid);
-  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--sidebar-border-solid));
+.np-fan-row { display: flex; gap: 6px; }
+
+/* transform + opacity ONLY. Items start tucked up under the ellipsis and
+   travel down into place, so the motion reads as unfolding out of the
+   button rather than fading in where they already were. */
+.np-fan-item,
+.np-fan-speed {
+  opacity: 0;
+  transform: translate3d(0, -14px, 0) scale(0.7);
+  transition: opacity calc(var(--fan-dur, 240ms) * 0.7) ease,
+              transform var(--fan-dur, 240ms) cubic-bezier(0.2, 0.9, 0.3, 1.15);
+  pointer-events: none;
 }
-.np-actions-open .np-overflow-panel {
+.np-actions-open .np-fan-item,
+.np-actions-open .np-fan-speed {
   opacity: 1;
   transform: translate3d(0, 0, 0) scale(1);
   pointer-events: auto;
 }
+.np-fan-speed .speed-stepper { margin: 0; }
 
-/* transform + opacity ONLY, on the panel and the items alike. Animating
-   anything else here (height, top, backdrop-filter) is what produced real
-   jank on this device before. */
-.np-overflow-item {
-  opacity: 0;
-  transform: translate3d(0, 10px, 0) scale(0.85);
-  transition: opacity .14s ease, transform .2s cubic-bezier(0.2, 0.9, 0.3, 1.1);
-}
-.np-actions-open .np-overflow-item {
-  opacity: 1;
-  transform: translate3d(0, 0, 0) scale(1);
-}
-/* The speed strip sets the panel's width; the icons centre against it. */
-.np-overflow-speed { display: flex; justify-content: center; }
-.np-overflow-speed .speed-stepper { margin: 0; }
-
-/* Full-viewport tap target so a tap anywhere else collapses the fan.
-   Deliberately invisible and unanimated — it's a hit area, not a scrim. */
-.np-overflow-scrim {
+/* Full-viewport hit area so a tap anywhere else collapses the fan.
+   Invisible and unanimated — a target, not a scrim. */
+.np-fan-scrim {
   position: fixed;
   inset: 0;
   border: none;
@@ -391,14 +437,31 @@ html, body, #root { height: 100%; margin: 0; }
   cursor: default;
 }
 
-/* Someone who has asked the OS for less motion gets the end state
-   immediately — the reveal still works, it just doesn't travel. */
-@media (prefers-reduced-motion: reduce) {
-  .np-overflow-panel,
-  .np-overflow-item { transition: none; }
-  .np-icon-btn { transition: none; }
-  .np-icon-btn:active { transform: none; }
+.np-actions-open .np-fan-item,
+.np-actions-open .np-fan-speed { will-change: transform, opacity; }
+
+/* Current position in whatever queue is loaded. Sits with the transport
+   controls, not with the fan — it's status, not an action. */
+.np-queue-pos {
+  margin-top: 6px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  opacity: 0.8;
 }
+
+/* Reduced motion drops the whole mechanism rather than shortening it: no
+   duration mapping, no stagger, no travel. The JS zeroes its delays to
+   match. */
+@media (prefers-reduced-motion: reduce) {
+  .np-fan-item,
+  .np-fan-speed { transition: none; transform: none; }
+  .np-actions-open .np-fan-item,
+  .np-actions-open .np-fan-speed { transform: none; }
+}
+
+
 .pill-btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px; border: var(--glass-border-top); background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer; backdrop-filter: blur(var(--blur)); }
 .pill-btn:disabled { opacity: 0.4; cursor: default; }
 .pill-glass { background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.35); color: #fff; backdrop-filter: blur(20px); }
