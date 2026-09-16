@@ -273,7 +273,91 @@ html, body, #root { height: 100%; margin: 0; }
 .np-transport-row { width: 100%; display: flex; justify-content: center; margin-top: 8px; }
 .np-transport-row .tp { margin-top: 0; }
 .np-screen .speed-stepper { margin-top: 6px; }
-.np-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; justify-content: center; }
+/* Icon-only action row with a fan-out overflow.
+   The row is the positioning context for the floating panel, so the
+   panel's transform origin can sit over the ellipsis itself. */
+.np-actions { position: relative; display: flex; gap: 10px; margin-top: 12px; justify-content: center; align-items: center; }
+
+.np-icon-btn {
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: var(--glass-border-top);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  flex-shrink: 0;
+  /* Only colour/border transition here. The fan animation below is
+     restricted to transform+opacity, and this must not quietly
+     reintroduce a layout- or filter-animating property alongside it. */
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.upod-root.native-platform .np-icon-btn {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: color-mix(in srgb, var(--accent) 8%, var(--sidebar-solid));
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--sidebar-border-solid));
+}
+.np-icon-btn:active { transform: scale(0.93); }
+.np-icon-active { color: var(--accent); border-color: var(--accent); }
+.np-icon-danger { color: #e5484d; }
+
+/* The fan. Anchored to the ellipsis (the row's last child) and stacked
+   upward, so the items read as having come out of that button.
+   pointer-events is what makes the collapsed state inert — the items stay
+   in the DOM so they can transition, rather than being unmounted. */
+.np-overflow-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+  z-index: 5;
+}
+.np-actions-open .np-overflow-panel { pointer-events: auto; }
+
+/* transform + opacity ONLY. Animating anything else here (height, top,
+   backdrop-filter) is what produced real jank on this device before —
+   these two are the only properties the compositor can handle without a
+   layout or paint pass. */
+.np-overflow-item {
+  opacity: 0;
+  transform: translate3d(0, 18px, 0) scale(0.72);
+  transition: opacity .16s ease, transform .24s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+  will-change: transform, opacity;
+}
+.np-actions-open .np-overflow-item {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+/* The speed strip is wider than the icons and would otherwise stretch the
+   column; it keeps its own intrinsic width and centres over them. */
+.np-overflow-speed { display: flex; justify-content: center; }
+.np-overflow-speed .speed-stepper { margin: 0; }
+
+/* Full-viewport tap target so a tap anywhere else collapses the fan.
+   Deliberately invisible and unanimated — it's a hit area, not a scrim. */
+.np-overflow-scrim {
+  position: fixed;
+  inset: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  z-index: 4;
+  cursor: default;
+}
+
+/* Someone who has asked the OS for less motion gets the end state
+   immediately — the reveal still works, it just doesn't travel. */
+@media (prefers-reduced-motion: reduce) {
+  .np-overflow-item { transition: none; }
+  .np-icon-btn { transition: none; }
+  .np-icon-btn:active { transform: none; }
+}
 .pill-btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px; border: var(--glass-border-top); background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer; backdrop-filter: blur(var(--blur)); }
 .pill-btn:disabled { opacity: 0.4; cursor: default; }
 .pill-glass { background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.35); color: #fff; backdrop-filter: blur(20px); }

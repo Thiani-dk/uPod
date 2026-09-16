@@ -1,5 +1,6 @@
 // src/screens/NowPlaying.jsx
 import React, { useEffect, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import {
   Bookmark,
   ListMusic,
@@ -10,14 +11,16 @@ import {
   Music,
   Maximize2,
   Minimize2,
-  Moon,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { usePlayerState, usePlayerTime, usePlayerActions, FAVORITES_PLAYLIST_ID, SPEED_STEPS } from "../store/PlayerContext";
 import TransportButtons from "../components/TransportButtons";
 import QueueModal from "../components/QueueModal";
 import NoteMark from "../components/NoteMark";
 import AddToPlaylistModal from "../components/AddToPlaylistModal";
-import SleepTimerModal from "../components/SleepTimerModal";
+import MetadataEditModal from "../components/MetadataEditModal";
+import DeleteTrackModal from "../components/DeleteTrackModal";
 
 function formatDur(seconds) {
   if (!seconds || !Number.isFinite(seconds)) return "0:00";
@@ -43,14 +46,19 @@ function SpeedStepper({ rate, onChange, light }) {
 }
 
 export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
-  const { queue, queueIndex, playlists, queueToast, playbackRate, sleepTimerEndsAt } = usePlayerState();
+  const { queue, queueIndex, playlists, queueToast, playbackRate } = usePlayerState();
   const { currentTime, duration } = usePlayerTime();
-  const { seek, setPlaybackRate } = usePlayerActions();
+  const { seek, setPlaybackRate, deleteTrack } = usePlayerActions();
   const [queueOpen, setQueueOpen] = useState(false);
   const [immersive, setImmersive] = useState(false);
   const [immersiveTransitioning, setImmersiveTransitioning] = useState(false);
   const [addToPlaylistOpen, setAddToPlaylistOpen] = useState(false);
-  const [sleepTimerOpen, setSleepTimerOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  // The secondary actions that float out of the ellipsis. Collapsed by
+  // default; see .np-overflow-* in global.css for why the reveal only
+  // animates transform/opacity.
+  const [overflowOpen, setOverflowOpen] = useState(false);
   const immersiveRef = useRef(null);
   const dragRef = useRef(null);
   const track = queue[queueIndex];
@@ -144,7 +152,20 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
   }
 
   const isFavorite = playlists.find((p) => p.id === FAVORITES_PLAYLIST_ID)?.trackIds.includes(track.id);
-  const sleepMinsLeft = sleepTimerEndsAt ? Math.max(1, Math.ceil((sleepTimerEndsAt - Date.now()) / 60000)) : null;
+  // Same gate TrackActionsMenu uses — only a native track has a real file
+  // on disk to delete; a browser-picked or Studio-rendered one doesn't.
+  const canDelete = Capacitor.isNativePlatform() && track.native;
+
+  // Deleting what's currently playing is the one case a track row never
+  // has to handle: the deleted track is the open screen's own subject.
+  // deleteTrack already advances the queue, so on success there's nothing
+  // to do but close the dialog and let this screen re-render on whatever
+  // is playing now (or the empty state, if the queue ran out).
+  async function handleDeleteCurrent() {
+    const result = await deleteTrack(track);
+    if (result.ok) setDeleteOpen(false);
+    return result;
+  }
 
   function searchArtistOnGoogle() {
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
@@ -299,36 +320,85 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
           <TransportButtons />
         </div>
 
-        <SpeedStepper rate={playbackRate} onChange={setPlaybackRate} />
+        <div className={`np-actions ${overflowOpen ? "np-actions-open" : ""}`}>
+          {/* Closes the fan on a tap anywhere else. Rendered only while
+              open and deliberately not animated — it's a hit target, not
+              a visible surface. */}
+          {overflowOpen && (
+            <button
+              className="np-overflow-scrim"
+              onClick={() => setOverflowOpen(false)}
+              aria-label="Close more actions"
+              tabIndex={-1}
+            />
+          )}
 
-        <div className="np-actions">
+          <div className="np-overflow-panel" aria-hidden={!overflowOpen}>
+            {/* Stagger is applied inline rather than with nth-child rules
+                so the delay follows the item's position in this list even
+                if the split between primary and overflow changes. */}
+            {[
+              { key: "eq", icon: SlidersHorizontal, label: "Equalizer", onClick: onOpenEq },
+              { key: "karaoke", icon: Mic2, label: "Karaoke", onClick: onOpenKaraoke },
+              { key: "edit", icon: Pencil, label: "Edit track info", onClick: () => setEditOpen(true) },
+              ...(canDelete
+                ? [{ key: "delete", icon: Trash2, label: "Delete from device", onClick: () => setDeleteOpen(true), danger: true }]
+                : []),
+            ].map((item, i) => (
+              <button
+                key={item.key}
+                className={`np-icon-btn np-overflow-item ${item.danger ? "np-icon-danger" : ""}`}
+                style={{ transitionDelay: `${overflowOpen ? i * 35 : 0}ms` }}
+                tabIndex={overflowOpen ? 0 : -1}
+                onClick={() => { item.onClick(); setOverflowOpen(false); }}
+                aria-label={item.label}
+                title={item.label}
+              >
+                <item.icon size={17} />
+              </button>
+            ))}
+            <div
+              className="np-overflow-item np-overflow-speed"
+              style={{ transitionDelay: `${overflowOpen ? (canDelete ? 4 : 3) * 35 : 0}ms` }}
+            >
+              <SpeedStepper rate={playbackRate} onChange={setPlaybackRate} />
+            </div>
+          </div>
+
           <button
-            className="pill-btn"
+            className="np-icon-btn"
             onClick={() => setAddToPlaylistOpen(true)}
+            aria-label="Add to playlist"
+            title="Add to playlist"
             style={isFavorite ? { color: "var(--accent)", borderColor: "var(--accent)" } : undefined}
           >
-            <Bookmark size={15} fill={isFavorite ? "currentColor" : "none"} />
-            {isFavorite ? "In Favourite Tunes" : "Add to playlist"}
+            <Bookmark size={17} fill={isFavorite ? "currentColor" : "none"} />
           </button>
-          <button className="pill-btn" onClick={() => setQueueOpen(true)}>
-            <ListMusic size={15} /> Queue
+          <button className="np-icon-btn" onClick={() => setQueueOpen(true)} aria-label="Queue" title="Queue">
+            <ListMusic size={17} />
           </button>
-          <button className="pill-btn" onClick={onOpenEq}><SlidersHorizontal size={15} /> EQ</button>
-          <button className="pill-btn" onClick={onOpenKaraoke}><Mic2 size={15} /> Karaoke</button>
           <button
-            className="pill-btn"
-            onClick={() => setSleepTimerOpen(true)}
-            style={sleepMinsLeft ? { color: "var(--accent)", borderColor: "var(--accent)" } : undefined}
+            className={`np-icon-btn np-overflow-toggle ${overflowOpen ? "np-icon-active" : ""}`}
+            onClick={() => setOverflowOpen((v) => !v)}
+            aria-label="More actions"
+            aria-expanded={overflowOpen}
+            title="More actions"
           >
-            <Moon size={15} /> {sleepMinsLeft ? `${sleepMinsLeft}m` : "Sleep"}
+            <MoreHorizontal size={17} />
           </button>
-          <button className="pill-btn"><MoreHorizontal size={15} /></button>
         </div>
       </div>
 
       {queueOpen && <QueueModal onClose={() => setQueueOpen(false)} />}
       {addToPlaylistOpen && <AddToPlaylistModal track={track} onClose={() => setAddToPlaylistOpen(false)} />}
-      {sleepTimerOpen && <SleepTimerModal onClose={() => setSleepTimerOpen(false)} />}
+      {editOpen && <MetadataEditModal track={track} onClose={() => setEditOpen(false)} />}
+      {deleteOpen && (
+        <DeleteTrackModal
+          track={track}
+          onCancel={() => setDeleteOpen(false)}
+          onConfirm={handleDeleteCurrent}
+        />
+      )}
     </>
   );
 }
