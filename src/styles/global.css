@@ -341,8 +341,12 @@ html, body, #root { height: 100%; margin: 0; }
   opacity: 0;
   transform: translate3d(0, 18px, 0) scale(0.72);
   transition: opacity .16s ease, transform .24s cubic-bezier(0.2, 0.9, 0.3, 1.15);
-  will-change: transform, opacity;
 }
+/* will-change only while the fan is actually open — these buttons are
+   always mounted, and a permanent hint would hold a composited layer for
+   each of them for the whole session. Same reasoning as the immersive
+   view's transition, which strips its own hint once the animation ends. */
+.np-actions-open .np-overflow-item { will-change: transform, opacity; }
 .np-actions-open .np-overflow-item {
   opacity: 1;
   transform: translate3d(0, 0, 0) scale(1);
