@@ -2,8 +2,8 @@
 // Central player state + real HTML5 Audio playback engine.
 import React, { createContext, useContext, useEffect, useReducer, useRef, useCallback, useMemo } from "react";
 import {
-  parseLibrary, groupIntoAlbums, normalizeKey, albumIdForTrack, coverObjectUrlFromBytes,
-  applyStoredMetadata, METADATA_ORIGIN,
+  parseLibrary, groupIntoAlbums, albumIdForTrack, coverObjectUrlFromBytes,
+  applyStoredMetadata, METADATA_ORIGIN, isInGeneralPool,
 } from "../audio/metadata";
 import { Capacitor } from "@capacitor/core";
 import {
@@ -1924,7 +1924,16 @@ export function PlayerProvider({ children }) {
   // an omission here would mean a real update silently fails to propagate.
   const restStateValue = useMemo(() => {
     const { currentTime, duration, ...rest } = state;
-    return rest;
+    // The general pool, derived here rather than maintained in the
+    // reducer: a dozen cases rebuild state.library and every one of them
+    // would have to remember to recompute this. Deriving it once from the
+    // library it's a function of can't go stale.
+    //
+    // state.library stays the complete set and remains what playlists,
+    // albums, the queue and playback restore resolve against, so a track
+    // excluded from the pool is still perfectly playable everywhere it
+    // was explicitly put.
+    return { ...rest, generalLibrary: state.library.filter(isInGeneralPool) };
   }, [
     state.library, state.albums, state.queue, state.queueIndex, state.playing,
     state.shuffle, state.repeatMode, state.playbackRate, state.theme, state.buttonPack,

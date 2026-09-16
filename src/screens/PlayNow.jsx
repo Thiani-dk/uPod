@@ -83,18 +83,18 @@ function PlaylistCarousel({ playlists, onOpenPlaylist }) {
 }
 
 export default function PlayNow({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
-  const { library, albums, playlists, queueIndex, playing } = usePlayerState();
+  const { library, generalLibrary, albums, playlists, queueIndex, playing } = usePlayerState();
   const { playTrackList, playTrackListFrom } = usePlayerActions();
   const [stats, setStats] = useState(null);
 
   function refresh() {
-    setStats(computeLibraryStats(library, albums, playlists));
+    setStats(computeLibraryStats(generalLibrary, albums, playlists));
   }
 
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [library, albums, playlists, queueIndex, playing]);
+  }, [generalLibrary, albums, playlists, queueIndex, playing]);
 
   if (library.length === 0) {
     return (

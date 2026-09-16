@@ -57,9 +57,14 @@ export function searchAll({ library, albums, playlists }, query) {
 // Thin hook wrapper for UI consumption — memoized so a re-render with the
 // same query/library/albums/playlists doesn't redo the filtering work.
 export function useUnifiedSearch(query) {
-  const { library, albums, playlists } = usePlayerState();
+  // Searches the general pool, not the full library: search results feed
+  // straight into the random-mix queue, so an unidentified file surfacing
+  // here would put it back into exactly the flat pool the pool rule keeps
+  // it out of. Albums and playlists are passed whole — a track is always
+  // reachable through something it was explicitly assigned to.
+  const { generalLibrary, albums, playlists } = usePlayerState();
   return useMemo(
-    () => searchAll({ library, albums, playlists }, query),
-    [library, albums, playlists, query]
+    () => searchAll({ library: generalLibrary, albums, playlists }, query),
+    [generalLibrary, albums, playlists, query]
   );
 }

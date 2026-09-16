@@ -4,16 +4,16 @@ import { ChevronLeft, Sparkles, Check } from "lucide-react";
 import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
 
 export default function InstantMix({ onBack }) {
-  const { library, albums } = usePlayerState();
+  const { generalLibrary, albums } = usePlayerState();
   const { playTrackList, saveQueueAsPlaylist } = usePlayerActions();
   const [selectedArtists, setSelectedArtists] = useState(new Set());
   const [selectedAlbums, setSelectedAlbums] = useState(new Set());
   const [query, setQuery] = useState("");
 
   const artists = useMemo(() => {
-    const set = new Set(library.map((t) => t.artist));
+    const set = new Set(generalLibrary.map((t) => t.artist));
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [library]);
+  }, [generalLibrary]);
 
   const q = query.trim().toLowerCase();
   const filteredArtists = artists.filter((a) => !q || a.toLowerCase().includes(q));
@@ -31,14 +31,14 @@ export default function InstantMix({ onBack }) {
   }
 
   const mixTracks = useMemo(() => {
-    const fromArtists = library.filter((t) => selectedArtists.has(t.artist));
+    const fromArtists = generalLibrary.filter((t) => selectedArtists.has(t.artist));
     const fromAlbums = albums
       .filter((al) => selectedAlbums.has(al.id))
       .flatMap((al) => al.tracks);
     const merged = [...fromArtists, ...fromAlbums];
     // De-dupe (a track can match both an artist and an album selection).
     return [...new Map(merged.map((t) => [t.id, t])).values()];
-  }, [library, albums, selectedArtists, selectedAlbums]);
+  }, [generalLibrary, albums, selectedArtists, selectedAlbums]);
 
   function generate() {
     if (mixTracks.length === 0) return;

@@ -292,7 +292,37 @@ export function applyStoredMetadata(track, declaredRecord, trustBaseline) {
       : {}),
     metadataOrigin,
     metadataSource: declaredRecord.source || null,
+    metadataPriorOrigin: declaredRecord.priorOrigin || METADATA_ORIGIN.UNKNOWN,
   };
+}
+
+// Whether a track belongs in the *general* pool — the flat Tracks list
+// and everything built from it (the random-100 queue, unified search
+// results, the Play Now stats, the Instant Mix pickers).
+//
+// The rule, and what it is NOT: this is not about hiding tracks. Album
+// and playlist browsing deliberately ignore it, so a track the user
+// assigned somewhere is always reachable and playable there. It only
+// governs the undifferentiated "everything you own" list, where a file
+// nobody can identify is noise — and where, unlike an album, there's no
+// context to make sense of it.
+//
+// A declaration alone doesn't earn a place here: the user's word is
+// authoritative for *display*, but nothing corroborates it, so it isn't
+// identification. The exception is priorOrigin — if the track was already
+// in the pool before the user said anything, tidying its title must not
+// be what removes it. See setTrackMetadataRecord.
+const POOLED_ORIGINS = new Set([
+  METADATA_ORIGIN.VERIFIED,
+  METADATA_ORIGIN.EMBEDDED,
+  METADATA_ORIGIN.TRUSTED,
+]);
+
+export function isInGeneralPool(t) {
+  if (t.metadataOrigin === METADATA_ORIGIN.DECLARED) {
+    return POOLED_ORIGINS.has(t.metadataPriorOrigin);
+  }
+  return POOLED_ORIGINS.has(t.metadataOrigin);
 }
 
 // A track flagged possiblyNotMusic stays out of albums/library views (and

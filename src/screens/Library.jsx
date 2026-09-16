@@ -19,7 +19,7 @@ const TABS = [
 ];
 
 export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
-  const { albums, playlists, library, coverOverrides, selectedFolderName, loadingLibrary, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
+  const { albums, playlists, library, generalLibrary, coverOverrides, selectedFolderName, loadingLibrary, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
   const { pickFolder, pickNativeFolder, playRandomMixFrom, addTrackToPlaylist, removeTrackFromPlaylist, commitCleanerResult } =
     usePlayerActions();
   const [tab, setTab] = useState("playnow");
@@ -61,7 +61,9 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   // playAlbumFromTrack/playPlaylist, and Play Now's carousels keep theirs
   // via playTrackListFrom; both are left untouched.
   function playSong(track) {
-    const visiblePool = searching ? searchResults.tracks : library;
+    // The Tracks tab lists the general pool, so the mix must draw from
+    // the same set the user is actually looking at.
+    const visiblePool = searching ? searchResults.tracks : generalLibrary;
     playRandomMixFrom(visiblePool, track);
   }
 
@@ -339,7 +341,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
 
       {albums.length > 0 && !searching && tab === "songs" && (
         <div className="track-list">
-          {library.map((t) => {
+          {generalLibrary.map((t) => {
             const isFavorite = favPlaylist?.trackIds.includes(t.id);
             return (
               <div key={t.id} className="track-row-wrap track-row-thumb-wrap">
@@ -380,8 +382,12 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
               </div>
             );
           })}
-          {library.length === 0 && (
-            <div className="empty-state">No tracks in your library yet.</div>
+          {generalLibrary.length === 0 && (
+            <div className="empty-state">
+              {library.length === 0
+                ? "No tracks in your library yet."
+                : "Nothing identified yet. Tracks appear here once they've been matched online or have proper tags — use \u201cClean up info\u201d on a track to sort one out."}
+            </div>
           )}
         </div>
       )}
