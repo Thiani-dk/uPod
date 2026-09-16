@@ -150,14 +150,6 @@ const initialState = {
   studioStatus: null,
   trackOrderStatus: null,
   queueToast: null,
-  // Duration picked by the user (minutes) — kept alongside sleepTimerEndsAt
-  // purely so the UI can show "Off in 15 min" without re-deriving it.
-  sleepTimerMinutes: null,
-  // Absolute timestamp (Date.now()-based) the timer expires at — an
-  // effect below watches this and pauses playback once it's passed. Using
-  // an absolute time rather than a running countdown means the timer stays
-  // correct even if the tab/app was backgrounded and JS timers were throttled.
-  sleepTimerEndsAt: null,
   // Set once, on cold launch, if the previous session's playback appears
   // to have been killed by the OS while backgrounded (see
   // backgroundPlaybackWatchdog.js) rather than just paused.
@@ -306,10 +298,6 @@ function reducer(state, action) {
     }
     case "SET_QUEUE_TOAST":
       return { ...state, queueToast: action.message };
-    case "SET_SLEEP_TIMER":
-      return { ...state, sleepTimerMinutes: action.minutes, sleepTimerEndsAt: action.endsAt };
-    case "CANCEL_SLEEP_TIMER":
-      return { ...state, sleepTimerMinutes: null, sleepTimerEndsAt: null };
     case "SET_BACKGROUND_KILL_NOTICE":
       return { ...state, backgroundKillNotice: action.value };
     case "CHECKING_FOR_NEW_MUSIC":
@@ -1080,27 +1068,6 @@ export function PlayerProvider({ children }) {
     return () => clearTimeout(t);
   }, [state.queueToast]);
 
-  // Sleep timer expiry — a single setTimeout keyed off the absolute end
-  // timestamp rather than a ticking countdown, so nothing needs to poll
-  // and the timer still fires at the right wall-clock time even if the
-  // effect re-runs (e.g. after a background/foreground cycle throttled JS
-  // timers). Pauses via the same actionsRef.current.pause() the
-  // MediaSession "pause" handler uses, not a raw dispatch, so the sleep
-  // timer never bypasses whatever "pause" ends up meaning elsewhere.
-  useEffect(() => {
-    if (!state.sleepTimerEndsAt) return;
-    const ms = state.sleepTimerEndsAt - Date.now();
-    const fire = () => {
-      actionsRef.current.pause();
-      dispatch({ type: "CANCEL_SLEEP_TIMER" });
-    };
-    if (ms <= 0) {
-      fire();
-      return;
-    }
-    const t = setTimeout(fire, ms);
-    return () => clearTimeout(t);
-  }, [state.sleepTimerEndsAt]);
 
   const pickFolder = useCallback(async (fileList) => {
     dispatch({ type: "LOADING_LIBRARY" });
@@ -1835,9 +1802,6 @@ export function PlayerProvider({ children }) {
       dispatch({ type: "SET_EQ_PRESET", name, bands });
     },
     renamePlaylist: (id, name) => dispatch({ type: "RENAME_PLAYLIST", id, name }),
-    setSleepTimer: (minutes) =>
-      dispatch({ type: "SET_SLEEP_TIMER", minutes, endsAt: Date.now() + minutes * 60000 }),
-    cancelSleepTimer: () => dispatch({ type: "CANCEL_SLEEP_TIMER" }),
     dismissBackgroundKillNotice: () => dispatch({ type: "SET_BACKGROUND_KILL_NOTICE", value: false }),
     fixAlbumTrackOrder: async (album) => {
       dispatch({ type: "SET_TRACK_ORDER_STATUS", status: "Looking up track order…" });
@@ -1940,7 +1904,6 @@ export function PlayerProvider({ children }) {
     state.fontFamily, state.accentColor, state.selectedFolderName, state.loadingLibrary,
     state.libraryError, state.libraryProgress, state.pendingFolderConfirm, state.eqBands,
     state.eqPreset, state.playlists, state.studioStatus, state.trackOrderStatus, state.queueToast,
-    state.sleepTimerMinutes, state.sleepTimerEndsAt,
     state.coverOverrides, state.backgroundKillNotice, state.newMusicFound, state.checkingForNewMusic,
     state.trackMetadata, state.trustBaseline,
   ]);

@@ -316,10 +316,18 @@ html, body, #root { height: 100%; margin: 0; }
 .np-icon-active { color: var(--accent); border-color: var(--accent); }
 .np-icon-danger { color: #e5484d; }
 
-/* The fan. Anchored to the ellipsis (the row's last child) and stacked
-   upward, so the items read as having come out of that button.
-   pointer-events is what makes the collapsed state inert — the items stay
-   in the DOM so they can transition, rather than being unmounted. */
+/* The fan, as a real floating surface rather than bare icons.
+   Confirmed on-device that loose icons don't work here: there is no empty
+   space above this row — the transport controls, progress bar, title and
+   artwork all live there — so the items landed on top of them, with the
+   EQ icon square over the play button. Overlaying content is fine for a
+   menu, but only if it reads as a layer, which means its own opaque
+   surface and elevation.
+
+   Anchored bottom-right with a matching transform-origin so it grows out
+   of the ellipsis. Right-aligned rather than centred because the panel is
+   as wide as the speed strip inside it; centring made the icons drift to
+   the middle of the screen, away from the button they came from. */
 .np-overflow-panel {
   position: absolute;
   right: 0;
@@ -327,32 +335,47 @@ html, body, #root { height: 100%; margin: 0; }
   display: flex;
   flex-direction: column-reverse;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
+  padding: 11px 11px;
+  border-radius: 20px;
+  background: var(--panel-strong);
+  border: var(--glass-border-top);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  transform-origin: bottom right;
+  opacity: 0;
+  transform: translate3d(0, 10px, 0) scale(0.82);
+  transition: opacity .15s ease, transform .22s cubic-bezier(0.2, 0.9, 0.3, 1.1);
   pointer-events: none;
   z-index: 5;
 }
-.np-actions-open .np-overflow-panel { pointer-events: auto; }
+/* Opaque on native: this WebView renders translucent surfaces as holes
+   that the artwork and title behind them bleed through, which is exactly
+   what sits behind this panel. */
+.upod-root.native-platform .np-overflow-panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: var(--sidebar-solid);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--sidebar-border-solid));
+}
+.np-actions-open .np-overflow-panel {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  pointer-events: auto;
+}
 
-/* transform + opacity ONLY. Animating anything else here (height, top,
-   backdrop-filter) is what produced real jank on this device before —
-   these two are the only properties the compositor can handle without a
-   layout or paint pass. */
+/* transform + opacity ONLY, on the panel and the items alike. Animating
+   anything else here (height, top, backdrop-filter) is what produced real
+   jank on this device before. */
 .np-overflow-item {
   opacity: 0;
-  transform: translate3d(0, 18px, 0) scale(0.72);
-  transition: opacity .16s ease, transform .24s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+  transform: translate3d(0, 10px, 0) scale(0.85);
+  transition: opacity .14s ease, transform .2s cubic-bezier(0.2, 0.9, 0.3, 1.1);
 }
-/* will-change only while the fan is actually open — these buttons are
-   always mounted, and a permanent hint would hold a composited layer for
-   each of them for the whole session. Same reasoning as the immersive
-   view's transition, which strips its own hint once the animation ends. */
-.np-actions-open .np-overflow-item { will-change: transform, opacity; }
 .np-actions-open .np-overflow-item {
   opacity: 1;
   transform: translate3d(0, 0, 0) scale(1);
 }
-/* The speed strip is wider than the icons and would otherwise stretch the
-   column; it keeps its own intrinsic width and centres over them. */
+/* The speed strip sets the panel's width; the icons centre against it. */
 .np-overflow-speed { display: flex; justify-content: center; }
 .np-overflow-speed .speed-stepper { margin: 0; }
 
@@ -371,6 +394,7 @@ html, body, #root { height: 100%; margin: 0; }
 /* Someone who has asked the OS for less motion gets the end state
    immediately — the reveal still works, it just doesn't travel. */
 @media (prefers-reduced-motion: reduce) {
+  .np-overflow-panel,
   .np-overflow-item { transition: none; }
   .np-icon-btn { transition: none; }
   .np-icon-btn:active { transform: none; }
