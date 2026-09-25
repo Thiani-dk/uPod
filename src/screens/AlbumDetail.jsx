@@ -5,6 +5,9 @@ import { usePlayerActions, usePlayerState, FAVORITES_PLAYLIST_ID } from "../stor
 import NoteMark from "../components/NoteMark";
 import MetadataEditModal from "../components/MetadataEditModal";
 import AddToPlaylistModal from "../components/AddToPlaylistModal";
+import BulkActionBar from "../components/BulkActionBar";
+import BulkSelectBox from "../components/BulkSelectBox";
+import useBulkSelect from "../utils/useBulkSelect";
 
 function formatDur(seconds) {
   if (!seconds || !Number.isFinite(seconds)) return "--:--";
@@ -19,6 +22,11 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
   const [lastFixResult, setLastFixResult] = useState(null);
   const [editingTrack, setEditingTrack] = useState(null);
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
+  // The same long-press selection the Tracks tab has (see useBulkSelect).
+  // It's safe on these rows specifically because nothing else here claims
+  // a hold on them — unlike PlaylistDetail, whose rows carry a drag
+  // handle for reordering.
+  const { selectedIds, selecting, clearSelection, rowProps } = useBulkSelect();
   const coverInputRef = useRef(null);
 
   const album = albums.find((a) => a.id === albumProp.id) || albumProp;
@@ -148,14 +156,26 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
       <div className="track-list">
         {album.tracks.map((t) => {
           const trackIsFavorited = favPlaylist?.trackIds.includes(t.id);
+          const selected = selecting && selectedIds.has(t.id);
           return (
             <div
               key={t.id}
-              className="track-row-wrap"
-              style={{ background: t.id === currentTrackId ? "var(--panel)" : "transparent" }}
+              className={`track-row-wrap${selected ? " track-row-selected" : ""}`}
+              style={{ background: t.id === currentTrackId && !selected ? "var(--panel)" : undefined }}
             >
-              <button className="track-row-play" onClick={() => playAlbumFromTrack(album, t)}>
-                <span className="track-n">{t.trackConfirmed === false ? "?" : t.track || "–"}</span>
+              <button
+                className="track-row-play"
+                // A tap plays the track until selection mode is on, at
+                // which point it toggles instead — see useBulkSelect.
+                {...rowProps(t.id, () => playAlbumFromTrack(album, t))}
+              >
+                {/* The checkbox takes the track number's slot, so rows
+                    keep their width going in and out of the mode. */}
+                {selecting ? (
+                  <span className="track-n"><BulkSelectBox checked={selected} /></span>
+                ) : (
+                  <span className="track-n">{t.trackConfirmed === false ? "?" : t.track || "–"}</span>
+                )}
                 <span className="track-title">
                   <span className="track-title-text">{t.title}</span>
                   {t.id === currentTrackId && (
@@ -166,31 +186,38 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
                 </span>
                 <span className="track-dur">{formatDur(null)}</span>
               </button>
-              <button
-                className="icon-btn small track-edit-btn"
-                onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
-                aria-label="Add to playlist"
-                title="Add to playlist"
-                style={trackIsFavorited ? { color: "var(--accent)" } : undefined}
-              >
-                <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
-              </button>
-              <button
-                className="icon-btn small track-edit-btn"
-                onClick={(e) => { e.stopPropagation(); addToQueue(t); }}
-                aria-label="Add to queue"
-                title="Add to queue"
-              >
-                <Plus size={13} />
-              </button>
-              <button
-                className="icon-btn small track-edit-btn"
-                onClick={() => setEditingTrack(t)}
-                aria-label="Edit track info"
-                title="Edit track info"
-              >
-                <Pencil size={13} />
-              </button>
+              {/* Per-row actions stand down while a selection is in
+                  progress, same as the Tracks tab's overflow button —
+                  they act on one track, and the screen is about several. */}
+              {!selecting && (
+                <>
+                  <button
+                    className="icon-btn small track-edit-btn"
+                    onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
+                    aria-label="Add to playlist"
+                    title="Add to playlist"
+                    style={trackIsFavorited ? { color: "var(--accent)" } : undefined}
+                  >
+                    <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
+                  </button>
+                  <button
+                    className="icon-btn small track-edit-btn"
+                    onClick={(e) => { e.stopPropagation(); addToQueue(t); }}
+                    aria-label="Add to queue"
+                    title="Add to queue"
+                  >
+                    <Plus size={13} />
+                  </button>
+                  <button
+                    className="icon-btn small track-edit-btn"
+                    onClick={() => setEditingTrack(t)}
+                    aria-label="Edit track info"
+                    title="Edit track info"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                </>
+              )}
             </div>
           );
         })}
@@ -202,6 +229,7 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
       {addToPlaylistTrack && (
         <AddToPlaylistModal track={addToPlaylistTrack} onClose={() => setAddToPlaylistTrack(null)} />
       )}
+      <BulkActionBar selectedIds={selectedIds} pool={album.tracks} onClear={clearSelection} />
     </div>
   );
 }

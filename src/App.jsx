@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
+import { SplashScreen } from "@capacitor/splash-screen";
 import "./styles/global.css";
 import { PlayerProvider, usePlayerState, usePlayerActions } from "./store/PlayerContext";
 import { consumeTopBackHandler } from "./utils/backHandlerStack";
@@ -10,6 +11,8 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import MiniPlayer from "./components/MiniPlayer";
+import UndoSnackbar from "./components/UndoSnackbar";
+import ResumePromptModal from "./components/ResumePromptModal";
 import NowPlaying from "./screens/NowPlaying";
 import Library from "./screens/Library";
 import AlbumDetail from "./screens/AlbumDetail";
@@ -42,8 +45,17 @@ const SCREEN_BACK_TARGETS = {
   reviewtracks: "settings",
 };
 
+// Ceiling on how long the splash may stay up waiting for hydration. It is
+// deliberately far above any normal launch (hydration is ~1.5s on this
+// library) — it exists only so a pathological cold IndexedDB read or a
+// much larger library can't strand the user on a logo with no way
+// forward. When it fires the app falls back to the old behaviour: the
+// library screen with its loading skeleton, which is honest about still
+// working rather than pretending to be empty.
+const SPLASH_CEILING_MS = 8000;
+
 function Shell() {
-  const { theme, accentColor, fontFamily, queue, queueIndex, albums, backgroundKillNotice, newMusicFound, loadingLibrary } =
+  const { theme, accentColor, artDim, fontFamily, queue, queueIndex, albums, backgroundKillNotice, newMusicFound, loadingLibrary, libraryHydrating, resumePrompt } =
     usePlayerState();
   const { dismissBackgroundKillNotice, initializeLibrary, dismissNewMusicFound, pickNativeFolder } = usePlayerActions();
   // null while checking (avoids a flash of the wrong screen), then true
@@ -112,6 +124,50 @@ function Shell() {
     });
   }, []);
 
+  // The native splash is configured with launchAutoHide: false (see
+  // capacitor.config.json), so it stays up until this hides it — which is
+  // the whole point: the empty window the user used to see was the app
+  // rendering itself before the IndexedDB cache had been read. Now the
+  // logo simply stays up a little longer and the library is already there
+  // when it lifts.
+  const splashHiddenRef = useRef(false);
+  function hideSplash() {
+    if (splashHiddenRef.current) return;
+    splashHiddenRef.current = true;
+    SplashScreen.hide({ fadeOutDuration: 200 }).catch((err) => {
+      console.warn("Couldn't hide splash screen:", err);
+    });
+  }
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    // Both conditions matter: hydration decides whether the library is
+    // on screen, and needsOnboarding decides whether the library is even
+    // the right screen — lifting the splash while that's still null
+    // would show the blank placeholder root.
+    if (libraryHydrating || needsOnboarding === null) return;
+    // Two frames, so the render that carries the hydrated library (and
+    // the one Play Now's own stats effect schedules right after it) has
+    // actually painted underneath before the logo lifts. Hiding on the
+    // effect alone can reveal a frame of the pre-stats screen.
+    const raf = requestAnimationFrame(() => requestAnimationFrame(hideSplash));
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [libraryHydrating, needsOnboarding]);
+
+  // Safety net only — see SPLASH_CEILING_MS.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const t = setTimeout(() => {
+      if (!splashHiddenRef.current) {
+        console.warn(`[upod] splash ceiling hit at ${SPLASH_CEILING_MS}ms — hydration still running`);
+        hideSplash();
+      }
+    }, SPLASH_CEILING_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function handleAccessGranted() {
     setNeedsOnboarding(false);
     initializeLibrary();
@@ -131,7 +187,7 @@ function Shell() {
   }
 
   const rootClass = Capacitor.isNativePlatform() ? "upod-root native-platform" : "upod-root";
-  const rootStyle = { "--accent": accentColor, fontFamily: getFontStack(fontFamily) };
+  const rootStyle = { "--accent": accentColor, "--art-dim": artDim, fontFamily: getFontStack(fontFamily) };
 
   // needsOnboarding === null: still checking — render nothing rather than
   // flash the (empty) library before potentially replacing it with
@@ -253,6 +309,11 @@ function Shell() {
             {screen === "reviewtracks" && <ReviewTracks onBack={() => setScreen("settings")} />}
           </div>
           {screen !== "nowplaying" && <MiniPlayer onOpen={() => setScreen("nowplaying")} />}
+          {/* Both sit at Shell level on purpose: the undo has to outlive
+              the screen that did the deleting, and the resume prompt can
+              land on whatever screen the app happened to be left on. */}
+          <UndoSnackbar />
+          {resumePrompt && <ResumePromptModal prompt={resumePrompt} />}
         </div>
       </div>
     </div>

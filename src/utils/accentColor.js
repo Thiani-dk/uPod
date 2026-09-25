@@ -12,7 +12,26 @@
 // accent (not neon, not washed out) rather than reproducing the image's
 // exact — possibly extreme — statistics.
 
-const FALLBACK_ACCENT = "#8B7CFF";
+// uPod's brand accent: the vivid pink/magenta the launcher icon and splash
+// are built from. Used before any cover has been analysed (first launch,
+// nothing playing) and whenever extraction can't find a usable hue —
+// never a substitute for the per-track dynamic accent, which still takes
+// over the moment a track with artwork starts.
+const FALLBACK_ACCENT = "#EC4899";
+
+// Immersive mode dims the cover before washing it with the accent. A single
+// fixed multiplier can't serve a whole library: measured on device, a pale
+// sleeve at brightness(0.54) landed in the right band while a dark
+// photographic cover collapsed to a 3-point tonal spread — flat mud with no
+// detail left. So the multiplier is computed per cover instead, to bring
+// every one of them to roughly the same mean luminance.
+//
+// MAX is 1 because brightening a dark cover is not the goal — it would just
+// amplify its noise and wash out the accent. A dark cover simply isn't
+// dimmed, and the tint plus vignette do the rest.
+const ART_TARGET_LUMA = 0.42;
+const ART_DIM_MIN = 0.45;
+const ART_DIM_MAX = 1;
 
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
@@ -60,12 +79,19 @@ function loadImage(dataUrl) {
 }
 
 /**
- * Returns a hex accent color extracted from a cover-art data URL, or the
- * app's default accent if extraction fails or the art has nothing usable
- * (e.g. a solid near-black or near-white cover).
+ * Returns { accent, dim } for a cover-art data URL: the extracted accent
+ * hex (or the app's default if extraction fails or the art has nothing
+ * usable, e.g. a solid near-black or near-white cover), and the brightness
+ * multiplier immersive mode should apply to this particular cover.
+ *
+ * Both come out of the same single downscale-and-walk — the luminance mean
+ * is accumulated over EVERY opaque pixel, deliberately unlike the accent,
+ * which throws away near-black/near-white/near-gray pixels. For "how bright
+ * is this image actually" those discarded pixels are exactly the ones that
+ * matter.
  */
-export async function extractAccentColor(coverDataUrl) {
-  if (!coverDataUrl) return FALLBACK_ACCENT;
+export async function extractCoverAppearance(coverDataUrl) {
+  if (!coverDataUrl) return { accent: FALLBACK_ACCENT, dim: 1 };
 
   try {
     const img = await loadImage(coverDataUrl);
@@ -78,10 +104,16 @@ export async function extractAccentColor(coverDataUrl) {
     const { data } = ctx.getImageData(0, 0, SIZE, SIZE);
 
     let sumSin = 0, sumCos = 0, sumSat = 0, sumLight = 0, weight = 0;
+    let sumLuma = 0, lumaCount = 0;
 
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
       if (a < 200) continue; // skip transparent pixels
+
+      // Rec. 709 luma, over every pixel including the ones the accent
+      // filter below discards.
+      sumLuma += (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      lumaCount += 1;
 
       const [h, s, l] = rgbToHsl(r, g, b);
 
@@ -100,7 +132,13 @@ export async function extractAccentColor(coverDataUrl) {
       weight += w;
     }
 
-    if (weight === 0) return FALLBACK_ACCENT;
+    const meanLuma = lumaCount ? sumLuma / lumaCount : 0.5;
+    const dim = Math.max(
+      ART_DIM_MIN,
+      Math.min(ART_DIM_MAX, ART_TARGET_LUMA / Math.max(meanLuma, 0.02))
+    );
+
+    if (weight === 0) return { accent: FALLBACK_ACCENT, dim };
 
     let hue = (Math.atan2(sumSin, sumCos) * 180) / Math.PI;
     if (hue < 0) hue += 360;
@@ -113,9 +151,9 @@ export async function extractAccentColor(coverDataUrl) {
     const finalSat = Math.max(0.45, Math.min(0.75, avgSat));
     const finalLight = Math.max(0.42, Math.min(0.62, avgLight));
 
-    return hslToHex(hue, finalSat, finalLight);
+    return { accent: hslToHex(hue, finalSat, finalLight), dim };
   } catch {
-    return FALLBACK_ACCENT;
+    return { accent: FALLBACK_ACCENT, dim: 1 };
   }
 }
 

@@ -1,7 +1,7 @@
 // src/screens/Library.jsx
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Search, X, FolderOpen, Wand2, MoreVertical, Bookmark, User, Play } from "lucide-react";
+import { Search, X, FolderOpen, Wand2, MoreVertical, Bookmark, User, Play, ArrowDownAZ, ArrowUpZA, GripVertical } from "lucide-react";
 import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID, playlistCoverKey } from "../store/PlayerContext";
 import { useUnifiedSearch } from "../utils/search";
 import NoteMark from "../components/NoteMark";
@@ -10,6 +10,11 @@ import TrackActionsMenu from "../components/TrackActionsMenu";
 import AddToPlaylistModal from "../components/AddToPlaylistModal";
 import MetadataEditModal from "../components/MetadataEditModal";
 import MetadataCleaner from "../components/MetadataCleaner";
+import PlaylistActionsMenu from "../components/PlaylistActionsMenu";
+import BulkActionBar from "../components/BulkActionBar";
+import BulkSelectBox from "../components/BulkSelectBox";
+import useDragReorder from "../utils/useDragReorder";
+import useBulkSelect from "../utils/useBulkSelect";
 
 const TABS = [
   { id: "playnow", label: "Play Now" },
@@ -18,9 +23,27 @@ const TABS = [
   { id: "songs", label: "Tracks" },
 ];
 
+// Deliberately mirrors Play Now's real layout — two stat cards and a
+// carousel row — so the screen doesn't reflow when the library lands.
+// Blocks only, no placeholder zeros: a "0 tracks this month" that
+// silently becomes 340 is exactly the lie this is replacing.
+function LibrarySkeleton() {
+  return (
+    <div className="library-skeleton" aria-busy="true" aria-label="Loading your library">
+      <div className="skeleton-card skeleton-card-hero" />
+      <div className="skeleton-card skeleton-card-lib" />
+      <div className="skeleton-carousel">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="skeleton-cover" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
-  const { albums, playlists, library, generalLibrary, coverOverrides, selectedFolderName, loadingLibrary, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
-  const { pickFolder, pickNativeFolder, playRandomMixFrom, commitCleanerResult } =
+  const { albums, playlists, library, generalLibrary, coverOverrides, selectedFolderName, loadingLibrary, libraryHydrating, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
+  const { pickFolder, pickNativeFolder, playRandomMixFrom, commitCleanerResult, movePlaylist } =
     usePlayerActions();
   const [tab, setTab] = useState("playnow");
   // The persistent top search bar is the ONLY search input on this screen.
@@ -30,14 +53,34 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   // is deliberately no per-tab filter input — the tab lists always show
   // their full contents.
   const [searchQuery, setSearchQuery] = useState("");
+  // Tracks-tab ordering only. Albums/Playlists/Play Now keep whatever
+  // order the store hands them — this toggle is deliberately rendered
+  // inside the Tracks tab rather than beside the shared search bar, so
+  // it can't read as a control over the whole library.
+  const [trackSortDesc, setTrackSortDesc] = useState(false);
   const [menuTrack, setMenuTrack] = useState(null);
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
   const [cleanTrack, setCleanTrack] = useState(null);
   const [editTrack, setEditTrack] = useState(null);
+  const [menuPlaylist, setMenuPlaylist] = useState(null);
+  // Tracks tab only — Albums/Playlists/Play Now are lists of albums and
+  // playlists, not of tracks, so there is nothing there to select.
+  const { selectedIds, selecting, clearSelection, rowProps } = useBulkSelect();
   const inputRef = useRef(null);
 
   const searchResults = useUnifiedSearch(searchQuery);
   const searching = searchQuery.trim().length > 0;
+
+  // localeCompare with numeric collation so "Track 2" sorts before
+  // "Track 10", and base sensitivity so case and accents don't split
+  // otherwise-adjacent titles apart.
+  const sortedTracks = useMemo(() => {
+    const dir = trackSortDesc ? -1 : 1;
+    return [...generalLibrary].sort(
+      (a, b) =>
+        dir * (a.title || "").localeCompare(b.title || "", undefined, { numeric: true, sensitivity: "base" })
+    );
+  }, [generalLibrary, trackSortDesc]);
 
   function handleFiles(e) {
     if (e.target.files && e.target.files.length > 0) {
@@ -60,6 +103,16 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   // Album/Playlist detail keep their own sequential behaviour via
   // playAlbumFromTrack/playPlaylist, and Play Now's carousels keep theirs
   // via playTrackListFrom; both are left untouched.
+  // Reordering the playlist list is reordering state.playlists itself, so
+  // the Library tab and the sidebar's shortcuts move together — they both
+  // render that one array in order.
+  const {
+    draggingIndex: draggingPlaylist,
+    listRef: playlistListRef,
+    setRowRef: setPlaylistRowRef,
+    gripProps: playlistGripProps,
+  } = useDragReorder({ count: playlists.length, gap: 6, onReorder: movePlaylist });
+
   function playSong(track) {
     // The Tracks tab lists the general pool, so the mix must draw from
     // the same set the user is actually looking at.
@@ -128,7 +181,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
           <button
             key={t.id}
             className={`tab-btn ${t.id === "playnow" ? "tab-btn-primary" : ""} ${tab === t.id ? "active" : ""}`}
-            onClick={() => setTab(t.id)}
+            onClick={() => { setTab(t.id); clearSelection(); }}
           >
             {t.id === "playnow" && <Play size={12} fill="currentColor" strokeWidth={0} />}
             {t.label}
@@ -136,7 +189,14 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         ))}
       </div>
 
-      {albums.length === 0 && !loadingLibrary && pendingFolderConfirm && (
+      {/* The cache read is async (see libraryHydrating in PlayerContext),
+          so on a cold launch the library is empty for a beat before it
+          fills. Showing the real screen through that window means blank
+          stat cards — or worse, "No music loaded yet" — that then
+          jarringly repopulate. A skeleton holds the shape instead. */}
+      {libraryHydrating && albums.length === 0 && <LibrarySkeleton />}
+
+      {albums.length === 0 && !loadingLibrary && !libraryHydrating && pendingFolderConfirm && (
         <div className="empty-state" style={{ padding: "40px 0" }}>
           Found a music folder at "{pendingFolderConfirm}" — use this folder?
           <div style={{ marginTop: 12, display: "flex", gap: 8, justifyContent: "center" }}>
@@ -150,7 +210,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         </div>
       )}
 
-      {albums.length === 0 && !loadingLibrary && !pendingFolderConfirm && (
+      {albums.length === 0 && !loadingLibrary && !libraryHydrating && !pendingFolderConfirm && (
         <div className="empty-state" style={{ padding: "40px 0" }}>
           No music loaded yet.
           <div style={{ marginTop: 12 }}>
@@ -180,7 +240,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
       )}
 
       {albums.length > 0 && !searching && tab === "playnow" && (
-        <PlayNow onOpenAlbum={onOpenAlbum} onOpenPlaylist={onOpenPlaylist} onOpenInstantMix={onOpenInstantMix} />
+        <PlayNow onOpenAlbum={onOpenAlbum} onOpenInstantMix={onOpenInstantMix} />
       )}
 
       {albums.length > 0 && searching && (
@@ -306,15 +366,40 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
       )}
 
       {albums.length > 0 && !searching && tab === "playlists" && (
-        <div className="playlist-list">
-          {playlists.map((p) => (
-            <button key={p.id} className="playlist-row" onClick={() => onOpenPlaylist(p)}>
-              {playlistThumb(p)}
-              <div className="playlist-row-meta">
-                <div className="playlist-row-name">{p.name}</div>
-                <div className="playlist-row-count">{p.trackIds.length} tracks</div>
-              </div>
-            </button>
+        <div
+          className={`playlist-list${draggingPlaylist !== null ? " playlist-list-dragging" : ""}`}
+          ref={playlistListRef}
+        >
+          {playlists.map((p, i) => (
+            <div
+              key={p.id}
+              ref={setPlaylistRowRef(i)}
+              className={`playlist-row-wrap${draggingPlaylist === i ? " row-lifted" : ""}`}
+            >
+              <button
+                className="queue-grip"
+                {...playlistGripProps(i)}
+                aria-label={`Reorder ${p.name} — hold and drag`}
+                title="Hold and drag to reorder"
+              >
+                <GripVertical size={14} />
+              </button>
+              <button className="playlist-row" onClick={() => onOpenPlaylist(p)}>
+                {playlistThumb(p)}
+                <div className="playlist-row-meta">
+                  <div className="playlist-row-name">{p.name}</div>
+                  <div className="playlist-row-count">{p.trackIds.length} tracks</div>
+                </div>
+              </button>
+              <button
+                className="icon-btn small"
+                onClick={(e) => { e.stopPropagation(); setMenuPlaylist(p); }}
+                aria-label={`Actions for ${p.name}`}
+                title="Playlist actions"
+              >
+                <MoreVertical size={15} />
+              </button>
+            </div>
           ))}
           {playlists.length === 0 && (
             <div className="empty-state">
@@ -324,28 +409,58 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         </div>
       )}
 
+      {albums.length > 0 && !searching && tab === "songs" && generalLibrary.length > 0 && (
+        <div className="track-sort-row">
+          <button
+            className="ghost-btn track-sort-btn"
+            onClick={() => setTrackSortDesc((d) => !d)}
+            aria-label={trackSortDesc ? "Sort A to Z" : "Sort Z to A"}
+            title={trackSortDesc ? "Sorted Z–A — tap for A–Z" : "Sorted A–Z — tap for Z–A"}
+          >
+            {trackSortDesc ? <ArrowUpZA size={14} /> : <ArrowDownAZ size={14} />}
+            <span>{trackSortDesc ? "Z–A" : "A–Z"}</span>
+          </button>
+        </div>
+      )}
+
       {albums.length > 0 && !searching && tab === "songs" && (
         <div className="track-list">
-          {generalLibrary.map((t) => {
+          {sortedTracks.map((t) => {
+            const selected = selecting && selectedIds.has(t.id);
             return (
-              <div key={t.id} className="track-row-wrap track-row-thumb-wrap">
-                <button className="track-row-play track-row-with-thumb" onClick={() => playSong(t)}>
-                  <div className={`track-row-thumb ${t.cover ? "" : "cover-glass"}`} style={t.cover ? { background: `url(${t.cover}) center/cover` } : undefined}>
-                    {!t.cover && <NoteMark size={18} style={{ color: "var(--accent)" }} />}
-                  </div>
+              <div
+                key={t.id}
+                className={`track-row-wrap track-row-thumb-wrap${selected ? " track-row-selected" : ""}`}
+              >
+                <button
+                  className="track-row-play track-row-with-thumb"
+                  // A tap starts the random mix until selection mode is
+                  // on, at which point it toggles instead — see
+                  // useBulkSelect.
+                  {...rowProps(t.id, () => playSong(t))}
+                >
+                  {selecting ? (
+                    <BulkSelectBox checked={selected} />
+                  ) : (
+                    <div className={`track-row-thumb ${t.cover ? "" : "cover-glass"}`} style={t.cover ? { background: `url(${t.cover}) center/cover` } : undefined}>
+                      {!t.cover && <NoteMark size={18} style={{ color: "var(--accent)" }} />}
+                    </div>
+                  )}
                   <span className="track-row-text">
                     <span className="track-row-text-title">{t.title}</span>
                     <span className="track-row-text-artist">{t.artist}</span>
                   </span>
                 </button>
-                <button
-                  className="icon-btn small track-edit-btn"
-                  onClick={(e) => { e.stopPropagation(); setMenuTrack(t); }}
-                  aria-label="Track actions"
-                  title="Track actions"
-                >
-                  <MoreVertical size={15} />
-                </button>
+                {!selecting && (
+                  <button
+                    className="icon-btn small track-edit-btn"
+                    onClick={(e) => { e.stopPropagation(); setMenuTrack(t); }}
+                    aria-label="Track actions"
+                    title="Track actions"
+                  >
+                    <MoreVertical size={15} />
+                  </button>
+                )}
               </div>
             );
           })}
@@ -383,6 +498,20 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
           onClose={() => setCleanTrack(null)}
           onCommit={(record) => commitCleanerResult(cleanTrack.id, record)}
         />
+      )}
+
+      {/* The whole selection goes through the existing Select Playlist
+          popup in one action — same sheet, same "New playlist…" row, just
+          handed a list instead of a single track. */}
+      {/* Scoped to the tab it belongs to: switching tabs clears the
+          selection outright, and searching replaces the list the selection
+          was made from, so neither leaves the bar stranded over rows that
+          are no longer on screen. */}
+      {!searching && tab === "songs" && (
+        <BulkActionBar selectedIds={selectedIds} pool={generalLibrary} onClear={clearSelection} />
+      )}
+      {menuPlaylist && (
+        <PlaylistActionsMenu playlist={menuPlaylist} onClose={() => setMenuPlaylist(null)} />
       )}
     </div>
   );

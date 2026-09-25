@@ -5,5 +5,16 @@
   "bundledWebRuntime": false,
   "android": {
     "appendUserAgent": "uPod/1.0 ( com.katiso.upod )"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "launchShowDuration": 0,
+      "backgroundColor": "#0A0A0C",
+      "androidScaleType": "CENTER_INSIDE",
+      "showSpinner": false,
+      "splashFullScreen": true,
+      "splashImmersive": false
+    }
   }
 }

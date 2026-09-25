@@ -6,6 +6,7 @@ import {
   applyStoredMetadata, METADATA_ORIGIN, isInGeneralPool,
 } from "../audio/metadata";
 import { Capacitor } from "@capacitor/core";
+import { App as CapacitorApp } from "@capacitor/app";
 import {
   scanNativeFolder,
   fingerprintNativeFolder,
@@ -42,7 +43,7 @@ import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffect
 import { audioBufferToWavBlob } from "../audio/wav";
 import { audioBufferToMp3Blob } from "../audio/mp3";
 import { fetchCanonicalTrackOrder, matchTracksToOrder } from "../online/trackOrder";
-import { extractAccentColor, FALLBACK_ACCENT } from "../utils/accentColor";
+import { extractCoverAppearance, FALLBACK_ACCENT } from "../utils/accentColor";
 import { recordListen } from "../utils/listeningStats";
 import { loadFont } from "../utils/fonts";
 import { MediaSession } from "@capgo/capacitor-media-session";
@@ -111,6 +112,18 @@ export function playlistCoverKey(playlistId) {
   return `playlist:${playlistId}`;
 }
 
+// How long a deleted playlist stays recoverable. Deleting a playlist
+// destroys nothing on disk — the tracks and their files are untouched —
+// but it can still be minutes of curation, so it gets a window rather
+// than a second confirmation dialog. Once it closes the playlist is gone
+// for real, and its custom cover is purged from IndexedDB with it.
+export const PLAYLIST_UNDO_MS = 6000;
+
+// A gap at least this long between the app being backgrounded and coming
+// back is "you were away", not "you checked a notification" — long
+// enough that silently resuming would be startling, so uPod asks first.
+export const RESUME_PROMPT_AFTER_MS = 30 * 60 * 1000;
+
 const initialState = {
   library: [],
   albums: [],
@@ -126,8 +139,19 @@ const initialState = {
   buttonPack: "modern",
   fontFamily: "inter",
   accentColor: FALLBACK_ACCENT,
+  // Per-cover brightness multiplier for immersive mode; 1 = leave as-is.
+  artDim: 1,
   selectedFolderName: null,
   loadingLibrary: false,
+  // True from the very first render until the launch effect has finished
+  // reading the IndexedDB cache (or bailed out). Distinct from
+  // loadingLibrary, which means "a real filesystem scan is running": this
+  // covers the async hydration window, during which the library is
+  // legitimately empty but *not* known to be empty. Without it the UI
+  // can't tell "no music yet" from "not read yet", so it renders a
+  // populated-looking but blank Play Now that fills in a second later.
+  // Only native hydrates from a cache, so the web build starts false.
+  libraryHydrating: Capacitor.isNativePlatform(),
   libraryError: null,
   libraryProgress: null,
   pendingFolderConfirm: null,
@@ -146,7 +170,18 @@ const initialState = {
   // Track ids that predate the authority rules and stay in the general
   // pool unconditionally. A Set, or null until it's been loaded.
   trustBaseline: null,
+  // Order is the playlist order the user sees, everywhere it's shown
+  // (Library's Playlists tab and the sidebar both render this array as-is),
+  // and it's what MOVE_PLAYLIST reorders and the persist effect saves.
   playlists: [{ id: FAVORITES_PLAYLIST_ID, name: "Favourite Tunes", effectId: null, trackIds: [] }],
+  // { playlist, index } — the last deleted playlist, held for
+  // PLAYLIST_UNDO_MS so the undo snackbar can put it back exactly where it
+  // was. Null the rest of the time.
+  playlistUndo: null,
+  // { title, artist } of the track that was loaded when the app went to
+  // the background, set on resume only after a long absence — see
+  // RESUME_PROMPT_AFTER_MS.
+  resumePrompt: null,
   studioStatus: null,
   trackOrderStatus: null,
   queueToast: null,
@@ -198,6 +233,8 @@ function reducer(state, action) {
   switch (action.type) {
     case "LOADING_LIBRARY":
       return { ...state, loadingLibrary: true, libraryError: null, libraryProgress: null, pendingFolderConfirm: null };
+    case "LIBRARY_HYDRATION_DONE":
+      return { ...state, libraryHydrating: false };
     case "SET_PENDING_FOLDER_CONFIRM":
       return { ...state, pendingFolderConfirm: action.path };
     case "LIBRARY_SCAN_PROGRESS":
@@ -260,14 +297,27 @@ function reducer(state, action) {
       const next = state.repeatMode === "off" ? "all" : state.repeatMode === "all" ? "one" : "off";
       return { ...state, repeatMode: next };
     }
+    // A genuine reorder — lift the track out and re-insert it — not the
+    // swap this used to be. The two are the same thing when |from - to|
+    // is 1, which is all the up/down chevrons ever ask for, so their
+    // behaviour is unchanged; they differ as soon as a track moves more
+    // than one slot, which drag-to-reorder does routinely. A swap there
+    // would fling whatever was at the destination back to the origin,
+    // which is not what the drag showed the user was about to happen.
     case "MOVE_QUEUE_ITEM": {
       const { from, to } = action;
-      if (to < 0 || to >= state.queue.length) return state;
+      const length = state.queue.length;
+      if (from === to || from < 0 || from >= length || to < 0 || to >= length) return state;
       const q = [...state.queue];
-      [q[from], q[to]] = [q[to], q[from]];
+      const [moved] = q.splice(from, 1);
+      q.splice(to, 0, moved);
+      // queueIndex points at a *position*, but it has to keep pointing at
+      // the same *track*: moving something across it shifts that track by
+      // one slot in the opposite direction.
       let newIndex = state.queueIndex;
       if (from === state.queueIndex) newIndex = to;
-      else if (to === state.queueIndex) newIndex = from;
+      else if (from < state.queueIndex && to >= state.queueIndex) newIndex = state.queueIndex - 1;
+      else if (from > state.queueIndex && to <= state.queueIndex) newIndex = state.queueIndex + 1;
       return { ...state, queue: q, queueIndex: newIndex };
     }
     case "REMOVE_QUEUE_ITEM": {
@@ -360,13 +410,21 @@ function reducer(state, action) {
         queueToast: `Added ${newIds.length} track${newIds.length === 1 ? "" : "s"} to "${playlist.name}"`,
       };
     }
+    // `tracks` is however many the caller has: one from a row's own
+    // add-to-playlist button, a whole selection from the Tracks tab's bulk
+    // bar, or none at all for an empty new playlist.
     case "CREATE_PLAYLIST_WITH_TRACK": {
-      const { name, track } = action;
+      const { name, tracks } = action;
       const id = `pl-user-${Date.now()}`;
+      const trackIds = [...new Set((tracks || []).map((t) => t.id))];
       return {
         ...state,
-        playlists: [...state.playlists, { id, name, effectId: null, trackIds: track ? [track.id] : [] }],
-        queueToast: track ? `Created "${name}" and added the track` : `Created "${name}"`,
+        playlists: [...state.playlists, { id, name, effectId: null, trackIds }],
+        queueToast: trackIds.length === 0
+          ? `Created "${name}"`
+          : trackIds.length === 1
+            ? `Created "${name}" and added the track`
+            : `Created "${name}" with ${trackIds.length} tracks`,
       };
     }
     case "SAVE_QUEUE_AS_PLAYLIST": {
@@ -411,6 +469,63 @@ function reducer(state, action) {
         ...state,
         playlists: state.playlists.map((p) => (p.id === action.id ? { ...p, name: action.name } : p)),
       };
+    // Favourite Tunes is the one playlist uPod itself depends on — the
+    // bookmark affordance on every track row writes to it by a fixed id,
+    // and the Play Now "Favorites" carousel reads it — so it is not
+    // deletable. Studio effect playlists are: they're ordinary playlists
+    // that happen to have been created by a render, and rendering again
+    // recreates one (see ADD_RENDERED_TRACK).
+    case "DELETE_PLAYLIST": {
+      if (action.id === FAVORITES_PLAYLIST_ID) return state;
+      const index = state.playlists.findIndex((p) => p.id === action.id);
+      if (index === -1) return state;
+      return {
+        ...state,
+        playlists: state.playlists.filter((p) => p.id !== action.id),
+        playlistUndo: { playlist: state.playlists[index], index },
+      };
+    }
+    // Back into the slot it came out of, not onto the end — the list has
+    // a user-chosen order now (MOVE_PLAYLIST), so "exactly as it was"
+    // includes where it sat.
+    case "RESTORE_PLAYLIST": {
+      if (!state.playlistUndo) return state;
+      const { playlist, index } = state.playlistUndo;
+      const playlists = [...state.playlists];
+      playlists.splice(Math.min(index, playlists.length), 0, playlist);
+      return { ...state, playlists, playlistUndo: null, queueToast: `Restored "${playlist.name}"` };
+    }
+    case "CLEAR_PLAYLIST_UNDO":
+      return { ...state, playlistUndo: null };
+    // A playlist's stored track order, which is its own thing entirely
+    // from the live queue's (MOVE_QUEUE_ITEM): reordering here changes
+    // what a later "Play" will queue up, and leaves the current queue
+    // alone.
+    case "MOVE_PLAYLIST_TRACK": {
+      const { playlistId, from, to } = action;
+      const playlist = state.playlists.find((p) => p.id === playlistId);
+      if (!playlist) return state;
+      const length = playlist.trackIds.length;
+      if (from === to || from < 0 || from >= length || to < 0 || to >= length) return state;
+      const trackIds = [...playlist.trackIds];
+      const [moved] = trackIds.splice(from, 1);
+      trackIds.splice(to, 0, moved);
+      return {
+        ...state,
+        playlists: state.playlists.map((p) => (p.id === playlistId ? { ...p, trackIds } : p)),
+      };
+    }
+    case "MOVE_PLAYLIST": {
+      const { from, to } = action;
+      const length = state.playlists.length;
+      if (from === to || from < 0 || from >= length || to < 0 || to >= length) return state;
+      const playlists = [...state.playlists];
+      const [moved] = playlists.splice(from, 1);
+      playlists.splice(to, 0, moved);
+      return { ...state, playlists };
+    }
+    case "SET_RESUME_PROMPT":
+      return { ...state, resumePrompt: action.prompt };
     // Applied once on native launch, after hydrating from IndexedDB —
     // replaces the default Favourite-Tunes-only playlists with whatever
     // was actually saved last session.
@@ -450,7 +565,7 @@ function reducer(state, action) {
     case "SET_FONT_FAMILY":
       return { ...state, fontFamily: action.fontId };
     case "SET_ACCENT_COLOR":
-      return { ...state, accentColor: action.color };
+      return { ...state, accentColor: action.color, artDim: action.dim ?? 1 };
     // Applied once on launch after loading every persisted override from
     // IndexedDB — replaces coverOverrides wholesale and reapplies to
     // whatever's currently in state.library (which may already be
@@ -607,6 +722,10 @@ export function PlayerProvider({ children }) {
   // fresh value the normal way).
   const playingRef = useRef(false);
   playingRef.current = state.playing;
+  // Always-current loaded track, read by the long-absence resume prompt's
+  // 'pause' listener (registered once on mount, same reason as above).
+  const currentTrackRef = useRef(null);
+  currentTrackRef.current = state.queue[state.queueIndex] || null;
   // Always-current queue position, read by the headset triple-click
   // detection in the media-session effect (registered once on mount, so it
   // can't close over a fresh value the normal way).
@@ -1024,18 +1143,20 @@ export function PlayerProvider({ children }) {
   useEffect(() => {
     const track = state.queue[state.queueIndex];
     if (!track) {
-      dispatch({ type: "SET_ACCENT_COLOR", color: FALLBACK_ACCENT });
+      dispatch({ type: "SET_ACCENT_COLOR", color: FALLBACK_ACCENT, dim: 1 });
       return;
     }
     const cached = accentCacheRef.current.get(track.id);
     if (cached) {
-      dispatch({ type: "SET_ACCENT_COLOR", color: cached });
+      dispatch({ type: "SET_ACCENT_COLOR", color: cached.accent, dim: cached.dim });
       return;
     }
     let cancelled = false;
-    extractAccentColor(track.cover).then((color) => {
-      accentCacheRef.current.set(track.id, color);
-      if (!cancelled) dispatch({ type: "SET_ACCENT_COLOR", color });
+    extractCoverAppearance(track.cover).then((appearance) => {
+      accentCacheRef.current.set(track.id, appearance);
+      if (!cancelled) {
+        dispatch({ type: "SET_ACCENT_COLOR", color: appearance.accent, dim: appearance.dim });
+      }
     });
     return () => {
       cancelled = true;
@@ -1067,6 +1188,24 @@ export function PlayerProvider({ children }) {
     const t = setTimeout(() => dispatch({ type: "SET_QUEUE_TOAST", message: null }), 2200);
     return () => clearTimeout(t);
   }, [state.queueToast]);
+
+  // Closes the undo window, and only then makes the deletion permanent:
+  // the playlist's custom cover survives in IndexedDB for exactly as long
+  // as the playlist is still recoverable, so an undo restores it along
+  // with the name and tracks. Restoring clears playlistUndo itself, which
+  // tears this timer down before it can fire.
+  useEffect(() => {
+    if (!state.playlistUndo) return;
+    const { id } = state.playlistUndo.playlist;
+    const t = setTimeout(() => {
+      dispatch({ type: "CLEAR_PLAYLIST_UNDO" });
+      dispatch({ type: "CLEAR_PLAYLIST_COVER_OVERRIDE", playlistId: id });
+      removePersistedCoverOverride(playlistCoverKey(id)).catch((err) => {
+        console.warn("Couldn't clear cover of deleted playlist:", err);
+      });
+    }, PLAYLIST_UNDO_MS);
+    return () => clearTimeout(t);
+  }, [state.playlistUndo]);
 
 
   const pickFolder = useCallback(async (fileList) => {
@@ -1394,9 +1533,20 @@ export function PlayerProvider({ children }) {
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     (async () => {
-      const granted = await ensureStoragePermission();
-      if (!granted) return;
-      await initializeLibrary();
+      const startedAt = Date.now();
+      try {
+        const granted = await ensureStoragePermission();
+        if (!granted) return;
+        await initializeLibrary();
+      } finally {
+        // In a finally so every exit path clears it — permission denied
+        // (onboarding takes over), cache hydrated, no cache so a scan or
+        // a folder confirmation is now pending, or an outright throw.
+        // Leaving it set on any of those would strand the UI in its
+        // loading state forever.
+        console.log(`[upod] library hydration window: ${Date.now() - startedAt}ms`);
+        dispatch({ type: "LIBRARY_HYDRATION_DONE" });
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1424,6 +1574,40 @@ export function PlayerProvider({ children }) {
       if (killed) dispatch({ type: "SET_BACKGROUND_KILL_NOTICE", value: true });
     });
     return armBackgroundWatchdog(playingRef);
+  }, []);
+
+  // "Resume music?" after a long absence. Distinct from the watchdog
+  // above, which is about the process being *killed*: this is the ordinary
+  // case where uPod was simply left in the background for a long time with
+  // a track paused part-way through. Auto-resuming after half an hour away
+  // would start music out of nowhere; doing nothing at all leaves a paused
+  // track sitting there unacknowledged. So it asks.
+  //
+  // The snapshot is in-memory on purpose. If the process doesn't survive
+  // the absence there is no 'resume' event to ask on — that's a cold
+  // launch, and the watchdog's own notice covers it.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const backgroundedRef = { current: null };
+    const handles = [];
+    CapacitorApp.addListener("pause", () => {
+      const track = currentTrackRef.current;
+      backgroundedRef.current = track ? { at: Date.now(), track } : null;
+    }).then((h) => handles.push(h));
+    CapacitorApp.addListener("resume", () => {
+      const snapshot = backgroundedRef.current;
+      backgroundedRef.current = null;
+      if (!snapshot) return;
+      if (Date.now() - snapshot.at < RESUME_PROMPT_AFTER_MS) return;
+      // Still playing means it played straight through the absence —
+      // there is nothing to resume and nothing to ask about.
+      if (playingRef.current) return;
+      dispatch({
+        type: "SET_RESUME_PROMPT",
+        prompt: { title: snapshot.track.title, artist: snapshot.track.artist },
+      });
+    }).then((h) => handles.push(h));
+    return () => handles.forEach((h) => h.remove());
   }, []);
 
   // Requests Android audio focus whenever playback starts, abandons it
@@ -1744,7 +1928,8 @@ export function PlayerProvider({ children }) {
     addTracksToPlaylist: (playlistId, tracks) => dispatch({ type: "ADD_TRACKS_TO_PLAYLIST", playlistId, tracks }),
     removeTrackFromPlaylist: (playlistId, trackId) => dispatch({ type: "REMOVE_TRACK_FROM_PLAYLIST", playlistId, trackId }),
     removeTracksFromPlaylist: (playlistId, trackIds) => dispatch({ type: "REMOVE_TRACKS_FROM_PLAYLIST", playlistId, trackIds }),
-    createPlaylistWithTrack: (name, track) => dispatch({ type: "CREATE_PLAYLIST_WITH_TRACK", name, track }),
+    createPlaylistWithTrack: (name, tracks) =>
+      dispatch({ type: "CREATE_PLAYLIST_WITH_TRACK", name, tracks: Array.isArray(tracks) ? tracks : tracks ? [tracks] : [] }),
     saveQueueAsPlaylist: (name) => dispatch({ type: "SAVE_QUEUE_AS_PLAYLIST", name }),
     setTheme: (theme) => dispatch({ type: "SET_THEME", theme }),
     setButtonPack: (pack) => dispatch({ type: "SET_BUTTON_PACK", pack }),
@@ -1802,6 +1987,27 @@ export function PlayerProvider({ children }) {
       dispatch({ type: "SET_EQ_PRESET", name, bands });
     },
     renamePlaylist: (id, name) => dispatch({ type: "RENAME_PLAYLIST", id, name }),
+    // The cover override is deliberately left in place while the undo
+    // window is open — restoring has to bring the custom cover back with
+    // it — and only purged once the window closes. See the
+    // state.playlistUndo effect above.
+    deletePlaylist: (id) => {
+      // A second delete inside the first one's window replaces the undo
+      // record, which makes the first deletion final right then — so its
+      // cover has to be cleaned up here rather than waiting for a timer
+      // that will never fire for it.
+      const pending = state.playlistUndo?.playlist;
+      if (pending && pending.id !== id) {
+        removePersistedCoverOverride(playlistCoverKey(pending.id)).catch((err) => {
+          console.warn("Couldn't clear cover of deleted playlist:", err);
+        });
+      }
+      dispatch({ type: "DELETE_PLAYLIST", id });
+    },
+    undoDeletePlaylist: () => dispatch({ type: "RESTORE_PLAYLIST" }),
+    movePlaylistTrack: (playlistId, from, to) => dispatch({ type: "MOVE_PLAYLIST_TRACK", playlistId, from, to }),
+    movePlaylist: (from, to) => dispatch({ type: "MOVE_PLAYLIST", from, to }),
+    dismissResumePrompt: () => dispatch({ type: "SET_RESUME_PROMPT", prompt: null }),
     dismissBackgroundKillNotice: () => dispatch({ type: "SET_BACKGROUND_KILL_NOTICE", value: false }),
     fixAlbumTrackOrder: async (album) => {
       dispatch({ type: "SET_TRACK_ORDER_STATUS", status: "Looking up track order…" });
@@ -1901,11 +2107,12 @@ export function PlayerProvider({ children }) {
   }, [
     state.library, state.albums, state.queue, state.queueIndex, state.playing,
     state.shuffle, state.repeatMode, state.playbackRate, state.theme, state.buttonPack,
-    state.fontFamily, state.accentColor, state.selectedFolderName, state.loadingLibrary,
+    state.fontFamily, state.accentColor, state.artDim, state.selectedFolderName, state.loadingLibrary,
+    state.libraryHydrating,
     state.libraryError, state.libraryProgress, state.pendingFolderConfirm, state.eqBands,
     state.eqPreset, state.playlists, state.studioStatus, state.trackOrderStatus, state.queueToast,
     state.coverOverrides, state.backgroundKillNotice, state.newMusicFound, state.checkingForNewMusic,
-    state.trackMetadata, state.trustBaseline,
+    state.trackMetadata, state.trustBaseline, state.playlistUndo, state.resumePrompt,
   ]);
 
   return (

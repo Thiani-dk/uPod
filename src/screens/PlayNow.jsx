@@ -62,27 +62,7 @@ function AlbumCarousel({ title, albums, onOpenAlbum, playTrackList }) {
   );
 }
 
-function PlaylistCarousel({ playlists, onOpenPlaylist }) {
-  if (!playlists || playlists.length === 0) return null;
-  return (
-    <div className="carousel-section">
-      <div className="carousel-title">Playlists</div>
-      <div className="carousel-scroll">
-        {playlists.map((p) => (
-          <button key={p.id} className="carousel-card" onClick={() => onOpenPlaylist(p)}>
-            <div className="carousel-card-cover cover-glass">
-              <NoteMark size={26} style={{ color: "var(--accent)" }} />
-            </div>
-            <div className="carousel-card-title">{p.name}</div>
-            <div className="carousel-card-sub">{p.trackIds.length} tracks</div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-export default function PlayNow({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
+export default function PlayNow({ onOpenAlbum, onOpenInstantMix }) {
   const { library, generalLibrary, albums, playlists, queueIndex, playing } = usePlayerState();
   const { playTrackList, playTrackListFrom } = usePlayerActions();
   const [stats, setStats] = useState(null);
@@ -178,7 +158,6 @@ export default function PlayNow({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
       <TrackCarousel title="Recently Played" tracks={stats.recentlyPlayed} playTrackList={playTrackList} playTrackListFrom={playTrackListFrom} />
       <TrackCarousel title="Recently Added" tracks={stats.recentlyAdded} playTrackList={playTrackList} playTrackListFrom={playTrackListFrom} />
       <AlbumCarousel title="Popular Albums" albums={stats.popularAlbums} onOpenAlbum={onOpenAlbum} playTrackList={playTrackList} />
-      <PlaylistCarousel playlists={playlists} onOpenPlaylist={onOpenPlaylist} />
     </div>
   );
 }

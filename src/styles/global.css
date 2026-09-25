@@ -285,9 +285,15 @@ html, body, #root { height: 100%; margin: 0; }
    on a 320dp phone there wasn't room for the fan's last row, so the speed
    strip fell off the bottom edge. Squaring off a little art is a better
    trade than a menu that needs scrolling to reach. */
-.np-art { width: min(100%, 33vh); aspect-ratio: 1 / 1; border-radius: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 20px 50px -12px color-mix(in srgb, var(--accent) 55%, transparent), var(--shadow); position: relative; border: var(--glass-border-top); overflow: hidden; }
+/* touch-action: manipulation is load-bearing for the tap gestures, not
+   a tidy-up. Without it this WebView reserves rapid taps on the art
+   for double-tap-to-zoom, which both delays the click and can zoom
+   the page instead of toggling the mode. Immersive mode gets this for
+   free from its own touch-action: none; normal mode does not.
+   Scoped to the art alone, so pinch-zoom still works everywhere else
+   — the viewport meta is deliberately left scalable. */
+.np-art { touch-action: manipulation; width: min(100%, 33vh); aspect-ratio: 1 / 1; border-radius: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 20px 50px -12px color-mix(in srgb, var(--accent) 55%, transparent), var(--shadow); position: relative; border: var(--glass-border-top); overflow: hidden; }
 .np-art::before { content: ""; position: absolute; inset: 0; background: var(--specular); mix-blend-mode: overlay; }
-.np-art-immersive-hint { position: absolute; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 8px; border: none; background: rgba(0,0,0,0.28); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .np-meta { width: 100%; text-align: left; margin-top: 10px; display: flex; flex-direction: column; }
 .effect-badge { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); margin-bottom: 8px; }
 .rendering-dot { font-weight: 400; color: var(--accent); margin-left: 6px; }
@@ -334,7 +340,44 @@ html, body, #root { height: 100%; margin: 0; }
 .np-progress input[type="range"]:focus { outline: none; }
 .np-progress-track { height: 4px; background: var(--panel); border-radius: 4px; overflow: hidden; }
 .np-progress-fill { height: 100%; background: var(--accent); border-radius: 4px; }
-.np-time-row { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-dim); margin-top: 6px; }
+/* Three slots, not two: elapsed, the info slot, total. A grid rather
+   than space-between so the middle stays genuinely centred no matter how
+   wide it gets — with flex, a long "Next: ..." string shoves the two time
+   labels off their own edges. The outer columns are sized from their
+   content, the middle takes what's left and truncates inside it. */
+.np-time-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 6px;
+}
+.np-time-end { font-variant-numeric: tabular-nums; }
+.np-time-end-right { text-align: right; }
+
+/* The middle slot: the file's real encoding, or what's queued next.
+   Looks like text, not a control — it only happens to be tappable, and
+   only when there are actually two things to swap between. */
+.np-info-slot {
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--text-dim);
+  text-align: center;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  cursor: pointer;
+}
+.np-info-slot-static { cursor: default; }
+.np-info-slot:not(.np-info-slot-static):active { color: var(--accent); }
+
 .np-transport-row { width: 100%; display: flex; justify-content: center; margin-top: 8px; }
 .np-transport-row .tp { margin-top: 0; }
 .np-screen .speed-stepper { margin-top: 6px; }
@@ -406,6 +449,52 @@ html, body, #root { height: 100%; margin: 0; }
 }
 .np-fan-row { display: flex; gap: 6px; }
 
+/* Read by ActionFan's chooseFit() to learn the bottom safe-area inset,
+   which JS has no other way to query. Zero width, no paint, no layout
+   cost beyond its own height. */
+/* The lift itself. transform/opacity only, same rule as everything else
+   that moves in this app. The transport row is inside this column, so it
+   travels with it — it is displaced, never covered. */
+.np-immersive-controls,
+.np-screen { transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1); }
+
+/* The title block is what the column slides into, so it steps back while
+   that's happening. Opacity only; it is display text, not a control. */
+.np-immersive-meta { transition: opacity 180ms ease; }
+.np-meta-receded { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .np-immersive-controls,
+  .np-screen,
+  .np-immersive-meta { transition: none; }
+}
+
+.np-safe-inset-probe {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  width: 0;
+  height: env(safe-area-inset-bottom, 0px);
+  pointer-events: none;
+}
+
+/* Step 2 of the fit ladder: same layout, tighter. Icons stay at 38px —
+   below that they stop being comfortable touch targets, so the ladder
+   moves on to repositioning rather than shrinking further. */
+.np-fan-compact { gap: 5px; padding-top: 4px; }
+.np-fan-compact .np-fan-row { gap: 4px; }
+.np-fan-compact .np-fan-item { width: 38px; height: 38px; }
+.np-fan-compact .speed-stepper { padding: 2px; gap: 3px; }
+.np-fan-compact .speed-step { padding: 4px 0; font-size: 10px; }
+
+/* There is deliberately no upward variant. It existed briefly and was a
+   functional regression: the space above the ellipsis is the transport
+   row, so an upward fan covered play/pause — and because the card
+   background sat on the fan CONTAINER while only its children were faded
+   out, the card stayed painted (and kept swallowing taps) after the fan
+   closed. When there is no room below, the column slides up instead; see
+   chooseFit() in NowPlaying.jsx. */
+
 /* transform + opacity ONLY. Items start tucked up under the ellipsis and
    travel down into place, so the motion reads as unfolding out of the
    button rather than fading in where they already were. */
@@ -424,18 +513,6 @@ html, body, #root { height: 100%; margin: 0; }
   pointer-events: auto;
 }
 .np-fan-speed .speed-stepper { margin: 0; }
-
-/* Full-viewport hit area so a tap anywhere else collapses the fan.
-   Invisible and unanimated — a target, not a scrim. */
-.np-fan-scrim {
-  position: fixed;
-  inset: 0;
-  border: none;
-  background: transparent;
-  padding: 0;
-  z-index: 4;
-  cursor: default;
-}
 
 .np-actions-open .np-fan-item,
 .np-actions-open .np-fan-speed { will-change: transform, opacity; }
@@ -560,7 +637,13 @@ html, body, #root { height: 100%; margin: 0; }
 .track-title-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .track-dur { flex-shrink: 0; font-size: 11.5px; color: var(--text-dim); }
 .dirty-badge { font-size: 9.5px; padding: 2px 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); font-weight: 600; }
-.modal-scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 20px; }
+/* z-index 200, matching .modal-overlay. It used to be 30, which put every
+   .modal-scrim dialog *underneath* the immersive Now Playing view
+   (z-index 50) — opening the queue from immersive mode looked like
+   nothing happened at all. position: fixed for the same reason: absolute
+   resolved against a positioned ancestor that immersive mode isn't inside
+   of. */
+.modal-scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 20px; }
 .modal { width: 100%; max-width: 320px; background: var(--panel-strong); backdrop-filter: blur(var(--blur)); border: var(--glass-border-top); border-radius: 20px; padding: 20px; box-shadow: var(--shadow); max-height: 80%; overflow-y: auto; }
 .modal-title { font-size: 15px; font-weight: 700; margin-bottom: 16px; }
 .modal-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
@@ -572,10 +655,55 @@ html, body, #root { height: 100%; margin: 0; }
 .modal-cover-preview { width: 46px; height: 46px; border-radius: 10px; flex-shrink: 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .queue-modal { max-width: 360px; }
-.queue-list { display: flex; flex-direction: column; gap: 4px; }
-.queue-row { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 10px; }
+/* Its own scroll container rather than letting the whole .modal scroll:
+   drag-to-reorder needs one element whose scrollTop it can nudge when the
+   dragged row reaches an edge, and it needs the toolbar above to stay put
+   while that happens. */
+.queue-list { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow-y: auto; }
+.queue-row { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 10px; position: relative; }
 .queue-row.queue-current { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.queue-grip { color: var(--text-dim); flex-shrink: 0; }
+
+/* The grip is the drag handle. touch-action:none is what lets a hold on
+   it become a drag instead of the list scrolling out from under it —
+   scoped to the handle alone, so the rest of the row still scrolls
+   normally. */
+.queue-grip {
+  border: none;
+  background: none;
+  padding: 2px 1px;
+  margin: -2px -1px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  cursor: grab;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.queue-grip:active { cursor: grabbing; color: var(--accent); }
+
+/* While a drag is in flight the displaced rows slide to their new slots.
+   transform only — the dragged row itself gets `transition: none` written
+   inline so it tracks the finger 1:1 instead of lagging behind it. */
+.queue-list-dragging .queue-row { transition: transform 160ms cubic-bezier(0.2, 0.9, 0.3, 1); will-change: transform; }
+
+/* The lift. Scale + opacity are the whole animation; the opaque fill and
+   the raised stacking order are instant state, not motion, and they're
+   there because a row being dragged has to read as solid against the rows
+   it passes over — a translucent row would show the row it's crossing
+   straight through itself. Built on --sidebar-solid, the app's existing
+   opaque-surface token, deliberately NOT on the modal surface: this is
+   one row asserting itself for the duration of a drag, and it must not
+   become a lever on the glass look of the card it sits in. */
+.queue-row-lifted {
+  z-index: 3;
+  background: color-mix(in srgb, var(--accent) 16%, var(--sidebar-solid));
+  box-shadow: var(--shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queue-list-dragging .queue-row { transition: none; }
+}
 .queue-row-main { flex: 1; min-width: 0; border: none; background: none; text-align: left; cursor: pointer; color: var(--text); padding: 0; }
 .queue-row-title { font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-now-badge { font-size: 9px; font-weight: 700; color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); padding: 2px 6px; border-radius: 999px; flex-shrink: 0; }
@@ -671,11 +799,19 @@ html, body, #root { height: 100%; margin: 0; }
 
 /* ============================================================
    Immersive Now Playing (np-immersive)
-   Full-bleed duotone cover art with theme-aware scrim + controls.
-   Mobile: stacked. >=720px landscape: split into two columns.
-   The duotone tint uses var(--accent) via mix-blend-mode, so it
-   automatically tracks whatever the current theme/accent is —
-   no separate "immersive theme" to maintain.
+
+   One surface: the artwork. It is absolutely positioned across the
+   entire view and everything else floats on top of it — header,
+   title, progress, transport, queue position, action fan. Normal
+   mode is art-in-a-box with controls on a separate background
+   underneath; that structural difference, not the size of the art,
+   is what makes this read as a different mode.
+
+   The components themselves are still the shared ones NowPlaying.jsx
+   builds once and renders into both trees, so they can't drift. Only
+   their COLOURS are re-scoped here, at the bottom of this block —
+   sitting on artwork instead of on the app background is a colour
+   problem, not a structure problem.
    ============================================================ */
 
 .np-immersive {
@@ -684,8 +820,11 @@ html, body, #root { height: 100%; margin: 0; }
   z-index: 50;
   display: flex;
   flex-direction: column;
-  background: #000;
   overflow: hidden;
+  /* Only ever visible if a track has no cover at all — the artwork
+     layer below covers this completely otherwise. */
+  background: var(--bg);
+  color: #fff;
   touch-action: none;
   /* Closed state lives here so the element can stay mounted the whole
      time NowPlaying is on screen — only `transform`/`opacity` change
@@ -717,19 +856,45 @@ html, body, #root { height: 100%; margin: 0; }
   }
 }
 
+/* The root swallows touch so the swipe-down-to-dismiss gesture can own
+   it; the seek bar has to claim its own axis back or dragging the thumb
+   dismisses the view instead of seeking. */
 .np-immersive input[type="range"] { touch-action: pan-x; }
 
-.np-immersive-art-wrap {
+/* ---- the artwork, as the whole screen ---- */
+
+.np-immersive-art {
   position: absolute;
   inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  cursor: pointer;
 }
 
 .np-immersive-art-img {
   width: 100%;
   height: 100%;
+  /* A square cover covering a tall viewport shows roughly the middle
+     45% of its width. Crop by framing, never by re-encoding — the file
+     on disk is untouched, same rule as everywhere else cover art is
+     handled. */
   object-fit: cover;
+  object-position: center;
   display: block;
-  filter: grayscale(1) contrast(1.08) brightness(0.95);
+  /* Pulls the cover down BEFORE the wash goes on. This is the part that
+     makes the treatment hold up across a whole library: a translucent
+     overlay alone composites to whatever the cover already was, so a pale
+     sleeve stays pale and the white text on it stops working. brightness()
+     is multiplicative, so it scales every cover by the same proportion and
+     lands them all in the same narrow band. The multiplier is per-cover
+     (--art-dim, computed in utils/accentColor.js from that cover's own
+     mean luminance) rather than fixed: a fixed 0.54 was measured on device
+     collapsing a dark photographic cover to a 3-point tonal spread — flat
+     mud with no detail left — while being exactly right for a pale one.
+     saturate() takes a little of the original colour out so the accent
+     wash above has something to unify, without going fully greyscale,
+     which would flatten the artwork into a single-hue silhouette. */
+  filter: brightness(var(--art-dim, 0.62)) saturate(0.82);
 }
 
 .np-immersive-art-fallback {
@@ -738,155 +903,182 @@ html, body, #root { height: 100%; margin: 0; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(155deg, hsl(200, 60%, 20%), hsl(255, 50%, 10%));
 }
 
+/* The wash. Two stacked translucent gradients composited normally over
+   the art — deliberately NOT mix-blend-mode: color, which replaces hue
+   outright and flattens the artwork to a single-hue duotone. Plain alpha
+   keeps the cover's own hues visible underneath while still unifying
+   everything under the accent, which is what makes the result read as
+   tinted artwork rather than as a recoloured silhouette.
+
+   --accent is the per-track colour already extracted from this cover by
+   utils/accentColor.js, so the wash is derived from the art it sits on
+   and changes with the music. No second colour system.
+
+   The darkening layer on top is what carries text legibility: the whole
+   image is pulled down far enough that white text works anywhere on it,
+   rather than every piece of text needing its own scrim. It's weighted
+   toward the bottom, where the chrome is densest, and eased off through
+   the upper third, where the art should be at its most open. Static once
+   painted — no animation, no transition. */
 .np-immersive-art-tint {
   position: absolute;
   inset: 0;
-  background: var(--accent);
-  mix-blend-mode: color;
-  opacity: 0.9;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(6, 5, 12, 0.56) 0%,
+      rgba(6, 5, 12, 0.34) 11%,
+      rgba(6, 5, 12, 0.16) 22%,
+      rgba(6, 5, 12, 0.18) 42%,
+      rgba(6, 5, 12, 0.40) 62%,
+      rgba(6, 5, 12, 0.66) 80%,
+      rgba(6, 5, 12, 0.84) 100%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 46%, transparent) 0%,
+      color-mix(in srgb, var(--accent) 38%, transparent) 50%,
+      color-mix(in srgb, var(--accent) 54%, transparent) 100%
+    );
 }
 
-.np-immersive-art-scrim {
-  position: absolute;
-  inset: 0;
-  /* Static once painted — no animation/transition here, this is purely
-     for text contrast against whatever art is behind it. Darkens earlier
-     and lands closer to opaque black at the bottom (where the title/
-     controls always sit) so light-colored or busy cover art doesn't wash
-     out the text on top of it. */
-  background: linear-gradient(
-    180deg,
-    rgba(0, 0, 0, 0.15) 0%,
-    rgba(0, 0, 0, 0.08) 30%,
-    rgba(0, 0, 0, 0.65) 62%,
-    rgba(0, 0, 0, 0.96) 100%
-  );
-}
+/* ---- everything else, floating on the art ---- */
 
-.np-immersive-content {
+.np-immersive-layer {
   position: relative;
+  z-index: 1;
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: env(safe-area-inset-top, 14px) 22px 24px;
+  /* Transparent to taps, so the large empty regions of the screen are
+     still the artwork as far as the double-tap gesture is concerned.
+     The controls re-enable it for themselves below. */
+  pointer-events: none;
 }
 
-.np-immersive-topbar {
-  display: flex;
-  justify-content: flex-end;
+.np-immersive-layer button,
+.np-immersive-layer input,
+.np-immersive-layer a { pointer-events: auto; }
+
+.np-immersive-head {
+  flex-shrink: 0;
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) 20px 0;
 }
 
-.np-immersive-close {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  border: none;
-  background: rgba(0, 0, 0, 0.32);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
+.np-immersive-head .np-playing-from { margin-bottom: 0; }
 
-.np-immersive-bottom {
-  margin-top: auto;
-  width: 100%;
-  max-width: 380px;
-  margin-left: auto;
-  margin-right: auto;
-}
-
+/* Pushed down to sit low on the art rather than centred in the void —
+   the upper half stays open artwork, which is the point of the mode. */
 .np-immersive-meta {
+  margin-top: auto;
+  padding: 0 24px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   text-align: center;
 }
 
-.np-immersive-title {
-  font-size: 21px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: #fff;
-}
-
+/* No plate, no ellipse, no bottom fade behind the text. The tint above
+   has already darkened the entire image, so contrast is a property of
+   the whole screen; these two just add a soft shadow as insurance for
+   an unusually bright patch of artwork landing behind them. */
 .np-immersive-artist {
-  border: none;
-  background: none;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 13.5px;
-  margin-top: 4px;
-  cursor: pointer;
+  color: rgba(255, 255, 255, 0.74);
+  text-align: center;
+  margin-bottom: 6px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
 }
 
-.np-immersive-pills {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 22px;
-}
-
-.np-pill {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  height: 38px;
-  border-radius: 19px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.10);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+.np-immersive-title {
   color: #fff;
-  cursor: pointer;
-  padding: 0 16px;
-  font-size: 12.5px;
-  white-space: nowrap;
+  font-size: 26px;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
-.np-pill-wide { flex: 1; }
-.np-pill-group { flex: 1.2; }
-.np-pill-icon-only { width: 38px; padding: 0; flex: 0 0 38px; }
-
-.np-immersive-progress { margin-top: 20px; }
-.np-immersive-progress input[type="range"] { width: 100%; accent-color: #fff; }
-
-.np-immersive-time-row {
+/* Keeps normal mode's column geometry — same max-width, same centring —
+   so the two modes share a measure even though they share no surface. */
+.np-immersive-controls {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 380px;
+  margin: 0 auto;
+  padding: 0 20px calc(env(safe-area-inset-bottom, 0px) + 22px);
   display: flex;
-  justify-content: space-between;
-  font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.65);
-  margin-top: 5px;
+  flex-direction: column;
+  align-items: center;
 }
 
-.np-immersive-transport { margin-top: 16px; }
-/* TransportButtons renders var(--text)/var(--text-dim)/var(--accent) —
-   override those three to white/translucent-white just inside immersive
-   mode so the buttons stay legible over the dark art, in either theme. */
-.np-immersive-transport .tp-btn { color: #fff; }
-.np-immersive-transport .tp-btn.tp-side { color: rgba(255, 255, 255, 0.7); }
-.np-immersive-transport .tp-btn.tp-active { color: #fff; }
-.np-immersive-transport .tp-main {
+/* ---- colour-only overrides for the shared components ----
+   Same markup, same classes, same structure as normal mode. These
+   change nothing but colour, because the one thing that genuinely
+   differs is what they're sitting on. */
+
+.np-immersive .np-playing-from-label { color: rgba(255, 255, 255, 0.66); opacity: 1; }
+.np-immersive .np-playing-from-name {
+  color: #fff;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+}
+
+.np-immersive .np-time-row,
+.np-immersive .np-info-slot { color: rgba(255, 255, 255, 0.74); }
+.np-immersive .np-queue-pos { color: rgba(255, 255, 255, 0.6); opacity: 1; }
+
+/* A lightened accent rather than flat white: still unmistakably the
+   track's own colour, but lifted far enough off the wash behind it to
+   read as the filled portion of a track. */
+.np-immersive .np-progress input[type="range"]::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--accent) 40%, #fff) var(--seek-pct, 0%),
+    rgba(255, 255, 255, 0.3) var(--seek-pct, 0%)
+  );
+}
+.np-immersive .np-progress input[type="range"]::-webkit-slider-thumb {
+  background: color-mix(in srgb, var(--accent) 30%, #fff);
+}
+
+.np-immersive .tp { color: #fff; }
+.np-immersive .tp-side { color: rgba(255, 255, 255, 0.74); }
+.np-immersive .tp-side.tp-active { color: #fff; }
+/* uPod's filled round main button is kept — it's this app's transport
+   signature — but inverted to white-on-dark. An accent-filled circle on
+   an accent wash is the one combination that disappears. */
+.np-immersive .tp-main {
   background: #fff;
-  color: #000;
+  color: #14131C;
+  border: none;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38);
 }
+.np-immersive .tp-main:active { background: rgba(255, 255, 255, 0.82); }
+.np-immersive .tp-side:active { color: #fff; }
 
-/* Landscape / tablet split: art left half, controls right half. */
+.np-immersive .np-fan-toggle,
+.np-immersive .np-fan-item { color: rgba(255, 255, 255, 0.78); }
+.np-immersive .np-fan-toggle:active,
+.np-immersive .np-fan-item:active,
+.np-immersive .np-icon-active { color: #fff; }
+
+.np-immersive .speed-stepper {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.np-immersive .speed-step { color: rgba(255, 255, 255, 0.72); }
+.np-immersive .speed-step-active { background: #fff; color: #14131C; }
+
+/* Landscape: the art still covers the whole viewport, so this only has
+   to stop the control column stretching across a wide screen. */
 @media (min-width: 720px) and (orientation: landscape) {
-  .np-immersive { flex-direction: row; }
-  .np-immersive-art-wrap { position: static; width: 50%; height: 100%; flex-shrink: 0; }
-  .np-immersive-content {
-    width: 50%;
-    padding: 24px 40px;
-    justify-content: center;
-  }
-  .np-immersive-bottom { margin-top: 0; }
-  .np-immersive-topbar { position: absolute; top: 18px; right: 18px; width: auto; }
-  .np-immersive-meta { text-align: left; }
-  .np-immersive-pills { justify-content: flex-start; }
+  .np-immersive-meta { padding-bottom: 14px; }
+  .np-immersive-controls { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 14px); }
 }
 
 /* ============================================================
@@ -2070,3 +2262,230 @@ html, body, #root { height: 100%; margin: 0; }
   cursor: pointer;
 }
 .cleaner-send:disabled { opacity: 0.4; cursor: default; }
+
+/* ============================================================
+   Dark-mode solid sheets — "Edit track info" and "Add to playlist"
+   In obsidian these two read as clear glass rather than fogged: they
+   are short, sparse sheets, so most of their area is --panel-strong's
+   9% white over whatever album art is behind, with no blur to fog it
+   (this WebView doesn't composite backdrop-filter). The Queue modal
+   gets away with the same token because its rows tile the surface with
+   their own panels. Fix is scoped to a class only these two carry —
+   .modal-sheet, --panel-strong and .modal (Queue) are untouched.
+   Light mode is already correct, so this is obsidian-only.
+   ============================================================ */
+.upod-root[data-theme="obsidian"] .modal-sheet-solid {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: color-mix(in srgb, var(--accent) 6%, var(--sidebar-solid));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--sidebar-border-solid));
+}
+
+/* ============================================================
+   Tracks tab — A–Z / Z–A sort toggle
+   Sits inside the Tracks tab, above its list, rather than next to the
+   shared search bar: the search bar spans the whole library, and a
+   sort control beside it would look like it reordered Albums and
+   Playlists too. Right-aligned so it reads as a list affordance.
+   ============================================================ */
+.track-sort-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.track-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.track-sort-btn svg { color: var(--accent); }
+
+/* ============================================================
+   Cold-launch skeleton (Library.jsx)
+   Covers the IndexedDB cache-hydration window. Opaque surfaces built
+   on --sidebar-solid rather than the translucent --panel tokens: this
+   WebView doesn't composite backdrop-filter, and a shimmering
+   see-through block over the page reads as a rendering fault.
+   The shimmer is a background-position animation (compositor-friendly,
+   no layout work) and stops for reduced-motion.
+   ============================================================ */
+.library-skeleton { padding-top: 2px; }
+
+.skeleton-card,
+.skeleton-cover {
+  background:
+    linear-gradient(
+      100deg,
+      color-mix(in srgb, var(--accent) 5%, var(--sidebar-solid)) 30%,
+      color-mix(in srgb, var(--accent) 13%, var(--sidebar-solid)) 50%,
+      color-mix(in srgb, var(--accent) 5%, var(--sidebar-solid)) 70%
+    );
+  background-size: 250% 100%;
+  animation: skeleton-shimmer 1.3s ease-in-out infinite;
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--sidebar-border-solid));
+}
+
+.skeleton-card { border-radius: 18px; margin-bottom: 12px; }
+.skeleton-card-hero { height: 150px; }
+.skeleton-card-lib { height: 176px; }
+
+.skeleton-carousel { display: flex; gap: 12px; overflow: hidden; margin-top: 20px; }
+.skeleton-cover { flex: 0 0 110px; height: 110px; border-radius: 14px; }
+
+@keyframes skeleton-shimmer {
+  from { background-position: 180% 0; }
+  to { background-position: -80% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-card,
+  .skeleton-cover { animation: none; }
+}
+
+
+/* ============================================================
+   Playback bar (MiniPlayer) — solid fogged surface, both themes
+   It floats over the scrolling content (position: absolute, bottom
+   12px), so carousel covers and album art pass directly underneath
+   it. On --panel-strong that's 68% white in glass and 9% in obsidian,
+   and the blur that was meant to fog it never composites on this
+   WebView — so the art reads straight through the bar. Opaque fill
+   instead, matching the Queue window's solid foggy-glass quality in
+   both themes. .mini-player is used only by MiniPlayer.jsx, and the
+   border/shadow/radius are left exactly as they were, so nothing
+   else moves and no shared token changes.
+   ============================================================ */
+.upod-root .mini-player {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: color-mix(in srgb, var(--accent) 6%, var(--sidebar-solid));
+}
+
+
+/* ============================================================
+   Playlist and playlist-track management
+   ============================================================ */
+
+/* Deleting a playlist is reversible for PLAYLIST_UNDO_MS, and this is the
+   only thing that says so. It sits above the mini player rather than
+   under it — the player is 58px tall at bottom:12px — because a safety
+   net the playback bar covers up is no net at all. */
+.undo-snackbar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 82px;
+  z-index: 16;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--sidebar-solid);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  animation: undo-snackbar-in 180ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.undo-snackbar-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.undo-snackbar-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+@keyframes undo-snackbar-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .undo-snackbar { animation: none; }
+}
+
+/* The playlist list is drag-reorderable now, so each entry is a wrapper
+   holding a grip, the row itself and an actions button — the same shape
+   .track-row-wrap already has, and for the same reason: a button can't
+   nest inside a button. .playlist-row keeps all of its own styling and
+   just gives up its background to the wrapper. */
+.playlist-row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 4px;
+  border-radius: 12px;
+  background: var(--panel);
+  position: relative;
+}
+.playlist-row-wrap .playlist-row { background: none; flex: 1; min-width: 0; }
+
+/* Same handle as the queue's, same contract (touch-action: none is what
+   turns a hold into a drag instead of scrolling the list). Shared rather
+   than re-specified, so the two can't drift apart. */
+.playlist-list, .detail-screen .track-list { position: relative; }
+.playlist-list-dragging .playlist-row-wrap,
+.track-list-dragging .track-row-wrap { transition: transform 160ms cubic-bezier(0.2, 0.9, 0.3, 1); will-change: transform; }
+@media (prefers-reduced-motion: reduce) {
+  .playlist-list-dragging .playlist-row-wrap,
+  .track-list-dragging .track-row-wrap { transition: none; }
+}
+.playlist-row-wrap.row-lifted,
+.track-row-wrap.row-lifted {
+  z-index: 3;
+  background: color-mix(in srgb, var(--accent) 16%, var(--sidebar-solid));
+  box-shadow: var(--shadow);
+}
+
+/* ============================================================
+   Bulk selection (Tracks tab)
+   ============================================================ */
+
+.track-row-wrap.track-row-selected { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+
+/* A checkbox that only exists in selection mode, in the slot the artwork
+   thumbnail otherwise occupies — so rows don't reflow on the way in and
+   out of the mode. */
+.track-select-box {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1.5px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+.track-select-box.checked { background: var(--accent); border-color: var(--accent); }
+
+/* Sits where the undo snackbar does, above the mini player, and for the
+   same reason. Only one of the two is ever up at a time. */
+.bulk-action-bar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 82px;
+  z-index: 16;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 12px;
+  background: var(--sidebar-solid);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+}
+.bulk-action-count { flex: 1; min-width: 0; font-weight: 600; }

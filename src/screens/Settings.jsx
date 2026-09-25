@@ -5,6 +5,7 @@ import { FolderOpen, Check, Play, Type } from "lucide-react";
 import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
 import { FONT_OPTIONS } from "../utils/fonts";
 import FontPickerModal from "../components/FontPickerModal";
+import NoteMark from "../components/NoteMark";
 import { BUTTON_PACKS } from "../components/TransportButtons";
 import { getMusicFolderPath, setMusicFolderPath, MUSIC_FOLDER_ROOT } from "../audio/nativeFolder";
 import { BACKGROUND_PLAYBACK_GUIDANCE } from "../utils/backgroundPlaybackWatchdog";
@@ -260,9 +261,18 @@ export default function Settings({ onOpenReviewTracks }) {
       <div>
         <div className="settings-group-title">About</div>
         <div className="settings-row">
-          <div>
-            <div className="settings-row-label">uPod</div>
-            <div className="settings-row-sub">it's all about you!</div>
+          {/* Same mark and treatment as the sidebar's brand row and the
+              launcher icon — About was the one place naming the app
+              without showing it. Wrapped so .settings-row's
+              space-between doesn't push the mark away from the text. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div className="brand-mark">
+              <NoteMark size={18} style={{ color: "#fff" }} />
+            </div>
+            <div>
+              <div className="settings-row-label">uPod</div>
+              <div className="settings-row-sub">it's all about you!</div>
+            </div>
           </div>
         </div>
       </div>

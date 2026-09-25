@@ -65,5 +65,23 @@
       "Bash(grep -n \"^import\\\\|queueToast: null,$\" src/store/PlayerContext.jsx)",
       "Bash(grep -n \"state.coverOverrides,$\" src/store/PlayerContext.jsx)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/katiso/.local/bin/headroom wrap selfheal --marker headroom-wrap-selfheal",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787",
+    "ENABLE_TOOL_SEARCH": "true"
   }
 }

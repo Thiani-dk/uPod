@@ -30,7 +30,7 @@ export default function MetadataEditModal({ track, onClose }) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-sheet modal-sheet-solid" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3 className="modal-title">Edit track info</h3>
           <button className="modal-close-btn" onClick={onClose}>
