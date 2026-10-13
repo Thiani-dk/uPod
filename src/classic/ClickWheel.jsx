@@ -74,7 +74,16 @@ export default function ClickWheel({ onStep, onSelect, onMenu, onPrev, onNext, o
       travel: 0,
     };
     setActive(true);
-    e.currentTarget.setPointerCapture?.(e.pointerId);
+    // Keeps the drag alive if the finger leaves the ring mid-rotation
+    // (easy to do on a wheel this size). Throws for a pointer id that
+    // isn't actually down — which never happens from a real touch, but
+    // does from a synthesized event, and losing capture is not a reason
+    // to drop the gesture.
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* no capture; the ring still gets moves while the finger is on it */
+    }
   }
 
   function handlePointerMove(e) {
