@@ -362,6 +362,11 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
   const { currentTime, duration } = usePlayerTime();
   const { seek, setPlaybackRate, deleteTrack } = usePlayerActions();
   const [queueOpen, setQueueOpen] = useState(false);
+  // Non-null only while the seek thumb is held: the position the user is
+  // dragging to, not yet applied to the audio. See progressBar below.
+  const [scrubbing, setScrubbing] = useState(null);
+  // Right-hand time label: track length, or time left.
+  const [showRemaining, setShowRemaining] = useState(false);
   const [immersive, setImmersive] = useState(false);
   const [immersiveTransitioning, setImmersiveTransitioning] = useState(false);
   const [addToPlaylistOpen, setAddToPlaylistOpen] = useState(false);
@@ -547,6 +552,20 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
     </div>
   );
 
+  // While the thumb is down the audio is NOT seeked — only this value
+  // moves, and it is what the bar and the elapsed label render. Seeking
+  // per input event fights the drag two ways: every seek triggers a
+  // position update that yanks the thumb back under the finger, and a
+  // drag across a long track fires dozens of them at an element that can
+  // only honour currentTime writes so fast. The seek is applied once, on
+  // release. (~/re-lab/specs/transport.md §6.)
+  const scrubValue = scrubbing != null ? scrubbing : currentTime;
+  function commitScrub() {
+    if (scrubbing == null) return;
+    seek(scrubbing);
+    setScrubbing(null);
+  }
+
   const progressBar = (focusable) => (
     <div className="np-progress">
       {/* --seek-pct drives the filled portion as a gradient stop rather
@@ -557,19 +576,35 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
         type="range"
         min={0}
         max={duration || 0}
-        value={currentTime}
-        onChange={(e) => seek(Number(e.target.value))}
+        value={scrubValue}
+        onChange={(e) => setScrubbing(Number(e.target.value))}
+        onPointerUp={commitScrub}
+        onPointerCancel={commitScrub}
+        // Keyboard arrows produce change events with no pointer at all,
+        // so they'd otherwise scrub forever and never commit.
+        onKeyUp={commitScrub}
+        onBlur={commitScrub}
         style={{
           width: "100%",
           accentColor: "var(--accent)",
-          "--seek-pct": `${duration ? Math.min(100, (currentTime / duration) * 100) : 0}%`,
+          "--seek-pct": `${duration ? Math.min(100, (scrubValue / duration) * 100) : 0}%`,
         }}
         tabIndex={focusable ? 0 : -1}
       />
       <div className="np-time-row">
-        <span className="np-time-end">{formatDur(currentTime)}</span>
+        <span className="np-time-end">{formatDur(scrubValue)}</span>
         <InfoSlot track={track} nextTrack={nextTrack} currentTime={currentTime} duration={duration} />
-        <span className="np-time-end np-time-end-right">{formatDur(duration)}</span>
+        {/* Tap to swap total for remaining and back — the same toggle
+            BlackPlayer puts on this label. */}
+        <button
+          type="button"
+          className="np-time-end np-time-end-right np-time-toggle"
+          onClick={() => setShowRemaining((v) => !v)}
+          tabIndex={focusable ? 0 : -1}
+          aria-label={showRemaining ? "Showing time remaining" : "Showing track length"}
+        >
+          {showRemaining ? `-${formatDur(Math.max(0, (duration || 0) - scrubValue))}` : formatDur(duration)}
+        </button>
       </div>
     </div>
   );

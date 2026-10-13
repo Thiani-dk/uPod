@@ -356,6 +356,11 @@ html, body, #root { height: 100%; margin: 0; }
 }
 .np-time-end { font-variant-numeric: tabular-nums; }
 .np-time-end-right { text-align: right; }
+/* The right-hand time is a button now (tap to swap total for remaining),
+   so it has to be stripped back to looking exactly like the span it
+   replaced — same font, no chrome, no focus box. */
+.np-time-toggle { border: none; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.np-time-toggle:active { opacity: 0.6; }
 
 /* The middle slot: the file's real encoding, or what's queued next.
    Looks like text, not a control — it only happens to be tappable, and
@@ -781,6 +786,18 @@ html, body, #root { height: 100%; margin: 0; }
 .tp-btn { border: none; background: none; color: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .tp-side { color: var(--text-dim); }
 .tp-side.tp-active { color: var(--accent); }
+/* The outer pair (repeat, shuffle) sit a step back from previous/next:
+   smaller glyph, lower opacity, same slot. That's how BlackPlayer's own
+   layouts build the hierarchy — see ~/re-lab/specs/transport.md — and it
+   means the row reads as "three controls and two indicators" without
+   needing a box or a second colour. The dimming is dropped the moment a
+   control is actually on, or an active shuffle would be quieter than an
+   inactive skip. */
+.tp-outer { opacity: 0.68; }
+.tp-outer.tp-active { opacity: 1; }
+/* Hold-to-seek lives on previous/next, so a held button must not also be
+   grabbed as a text selection or a long-press callout. */
+.tp-btn { touch-action: manipulation; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 .tp-main { color: #fff; background: var(--accent); border-radius: 50%; width: 58px; height: 58px; box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 55%, transparent); border: var(--glass-border-top); }
 
 .tp-compact { gap: 10px; }

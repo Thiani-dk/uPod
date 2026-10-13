@@ -1,12 +1,13 @@
 // src/screens/Settings.jsx
 import React, { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { FolderOpen, Check, Play, Type } from "lucide-react";
+import { FolderOpen, Check, Type } from "lucide-react";
 import { usePlayerState, usePlayerActions } from "../store/PlayerContext";
 import { FONT_OPTIONS } from "../utils/fonts";
 import FontPickerModal from "../components/FontPickerModal";
 import NoteMark from "../components/NoteMark";
 import { BUTTON_PACKS } from "../components/TransportButtons";
+import { PlayGlyph } from "../components/TransportGlyphs";
 import { getMusicFolderPath, setMusicFolderPath, MUSIC_FOLDER_ROOT } from "../audio/nativeFolder";
 import { BACKGROUND_PLAYBACK_GUIDANCE } from "../utils/backgroundPlaybackWatchdog";
 import { WHEEL_SENSITIVITIES } from "../classic/ClickWheel";
@@ -16,11 +17,11 @@ function PackPreview({ pack }) {
   const { shuffle: ShuffleIcon, back: BackIcon, forward: ForwardIcon, repeat: RepeatIcon } = pack.icons;
   return (
     <div className={pack.cls} style={{ marginTop: 0 }}>
-      <button className="tp-btn tp-side" tabIndex={-1}><ShuffleIcon size={14} /></button>
+      <button className="tp-btn tp-side tp-outer" tabIndex={-1}><RepeatIcon size={14} /></button>
       <button className="tp-btn tp-side" tabIndex={-1}><BackIcon size={16} /></button>
-      <button className="tp-btn tp-main" tabIndex={-1}><Play size={18} /></button>
+      <button className="tp-btn tp-main" tabIndex={-1}><PlayGlyph size={18} /></button>
       <button className="tp-btn tp-side" tabIndex={-1}><ForwardIcon size={16} /></button>
-      <button className="tp-btn tp-side" tabIndex={-1}><RepeatIcon size={14} /></button>
+      <button className="tp-btn tp-side tp-outer" tabIndex={-1}><ShuffleIcon size={14} /></button>
     </div>
   );
 }

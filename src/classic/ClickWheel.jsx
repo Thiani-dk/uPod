@@ -33,14 +33,18 @@ const TAP_MAX_TRAVEL_PX = 8;
 const TAP_MAX_MS = 250;
 
 // Holding previous/next seeks. The first jump waits out HOLD_START_MS so
-// an ordinary tap is never a seek, then repeats on a fixed interval with
-// the jump growing each time: a brief hold nudges, a long one crosses a
-// track. Capped so the far end of a hold stays steerable.
+// an ordinary tap is never a seek. The step is a constant 5 seconds and
+// it is the *interval* that accelerates — 500ms down to a 100ms floor in
+// 40ms decrements. Same model as the normal UI's transport row, and from
+// the same reasoning (~/re-lab/specs/transport.md §4): a constant step
+// means the position never jumps further per tick than the 5s you started
+// with, so a long hold stays stoppable on a target instead of flying past
+// it in ever bigger leaps.
 const HOLD_START_MS = 450;
-const HOLD_INTERVAL_MS = 180;
-const HOLD_FIRST_JUMP_S = 2;
-const HOLD_ACCELERATION = 1.35;
-const HOLD_MAX_JUMP_S = 20;
+const HOLD_STEP_S = 5;
+const HOLD_FIRST_INTERVAL_MS = 500;
+const HOLD_INTERVAL_STEP_MS = 40;
+const HOLD_MIN_INTERVAL_MS = 100;
 
 // Normalizes a raw angle difference into (-180, 180] so crossing the
 // atan2 discontinuity at ±180° reads as a small step in the direction the
@@ -104,7 +108,9 @@ export default function ClickWheel({
 
   const stopHold = useCallback(() => {
     clearTimeout(holdRef.current.timer);
-    clearInterval(holdRef.current.interval);
+    // A chained setTimeout rather than a setInterval, because the gap
+    // between repeats shrinks as the hold goes on.
+    clearTimeout(holdRef.current.interval);
     holdRef.current = { timer: 0, interval: 0 };
     setHolding(null);
   }, []);
@@ -117,15 +123,15 @@ export default function ClickWheel({
 
   function startHold(zone) {
     const dir = zone === "next" ? 1 : -1;
-    let jump = HOLD_FIRST_JUMP_S;
+    let interval = HOLD_FIRST_INTERVAL_MS;
     setHolding(zone);
-    configRef.current.onSeekBy?.(dir * jump);
-    tick();
-    holdRef.current.interval = setInterval(() => {
-      jump = Math.min(jump * HOLD_ACCELERATION, HOLD_MAX_JUMP_S);
-      configRef.current.onSeekBy?.(dir * jump);
+    const fire = () => {
+      configRef.current.onSeekBy?.(dir * HOLD_STEP_S);
       tick();
-    }, HOLD_INTERVAL_MS);
+      interval = Math.max(HOLD_MIN_INTERVAL_MS, interval - HOLD_INTERVAL_STEP_MS);
+      holdRef.current.interval = setTimeout(fire, interval);
+    };
+    fire();
   }
 
   function centreOf(el) {
