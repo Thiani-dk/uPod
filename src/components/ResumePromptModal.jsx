@@ -10,8 +10,13 @@ import { usePlayerActions } from "../store/PlayerContext";
 import useBackButtonClose from "../utils/useBackButtonClose";
 
 export default function ResumePromptModal({ prompt }) {
-  const { play, dismissResumePrompt } = usePlayerActions();
-  useBackButtonClose(dismissResumePrompt);
+  const { play, dismissResumePrompt, declineResume } = usePlayerActions();
+  // Every way out of this dialog except Resume is a decline, including
+  // the backdrop and the hardware back button. Half an hour later the
+  // queue isn't something the user is holding on to, and leaving it
+  // loaded after they've waved the question away is exactly the state
+  // this whole prompt exists to avoid.
+  useBackButtonClose(declineResume);
 
   function handleResume() {
     dismissResumePrompt();
@@ -19,11 +24,11 @@ export default function ResumePromptModal({ prompt }) {
   }
 
   return (
-    <div className="modal-scrim" onClick={dismissResumePrompt}>
+    <div className="modal-scrim" onClick={declineResume}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-title-row">
           <div className="modal-title">Resume music?</div>
-          <button className="icon-btn small" onClick={dismissResumePrompt} aria-label="Dismiss">
+          <button className="icon-btn small" onClick={declineResume} aria-label="Dismiss">
             <X size={16} />
           </button>
         </div>
@@ -34,7 +39,7 @@ export default function ResumePromptModal({ prompt }) {
         </div>
 
         <div className="modal-actions">
-          <button className="ghost-btn" onClick={dismissResumePrompt}>Not now</button>
+          <button className="ghost-btn" onClick={declineResume}>Not now</button>
           <button className="primary-btn" onClick={handleResume}>
             <Play size={15} style={{ marginLeft: -1 }} /> Resume
           </button>

@@ -554,6 +554,20 @@ html, body, #root { height: 100%; margin: 0; }
 .mini-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
 .mini-fx-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 .mini-artist { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The dismiss affordance on the Now Playing bar. Bare icon rather than a
+   second button box beside the play control — it's an escape hatch, not a
+   peer of the transport. Sized to 32px so it still clears a thumb. */
+.mini-dismiss { width: 32px; height: 32px; border: none; background: none; color: var(--text-dim); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+.mini-dismiss:active { color: var(--text); transform: scale(0.9); }
+/* Follows the finger on a swipe-down without animating, then springs back
+   if the drag didn't go far enough to dismiss.
+   touch-action: none is what makes the gesture possible at all: without
+   it the WebView claims a vertical drag that starts on the bar as a
+   scroll of the list behind it, fires pointercancel, and the swipe is
+   never seen. The bar is a fixed overlay, so nothing is lost by it not
+   scrolling the page. */
+.mini-player { transition: transform 160ms ease, opacity 160ms ease; touch-action: none; }
+.mini-player:active { transition: none; }
 .mini-play { width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
 .search-bar { display: flex; align-items: center; gap: 9px; padding: 11px 14px; border-radius: 14px; background: var(--panel); border: var(--glass-border-top); margin: 16px 0 12px; color: var(--text-dim); backdrop-filter: blur(var(--blur)); }
 .search-bar input { border: none; background: none; outline: none; color: var(--text); font-size: 13px; flex: 1; }

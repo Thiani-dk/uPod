@@ -189,6 +189,11 @@ const initialState = {
   // the background, set on resume only after a long absence — see
   // RESUME_PROMPT_AFTER_MS.
   resumePrompt: null,
+  // The user has swiped/closed the Now Playing bar away for this queue.
+  // Only hides the bar — the queue and playback are untouched, and any
+  // deliberate "play this" (a new queue, or stepping to another track)
+  // clears it, because that is the user asking for the bar back.
+  miniPlayerHidden: false,
   studioStatus: null,
   trackOrderStatus: null,
   queueToast: null,
@@ -267,9 +272,26 @@ function reducer(state, action) {
     case "LIBRARY_ERROR":
       return { ...state, loadingLibrary: false, libraryProgress: null, libraryError: action.message };
     case "SET_QUEUE":
-      return { ...state, queue: action.queue, queueIndex: action.index ?? 0, playing: true, currentTime: 0 };
+      return { ...state, queue: action.queue, queueIndex: action.index ?? 0, playing: true, currentTime: 0, miniPlayerHidden: false };
     case "SET_INDEX":
-      return { ...state, queueIndex: action.index, playing: true, currentTime: 0 };
+      return { ...state, queueIndex: action.index, playing: true, currentTime: 0, miniPlayerHidden: false };
+    case "SET_MINI_PLAYER_HIDDEN":
+      return { ...state, miniPlayerHidden: action.hidden };
+    // Throws the queue away entirely: nothing loaded, nothing playing,
+    // nothing for the bar to show. What declining the resume prompt does,
+    // so the next track tapped starts a genuinely fresh queue rather than
+    // being appended to a session the user already said no to.
+    case "CLEAR_QUEUE":
+      return {
+        ...state,
+        queue: [],
+        queueIndex: 0,
+        playing: false,
+        currentTime: 0,
+        duration: 0,
+        resumePrompt: null,
+        miniPlayerHidden: false,
+      };
     case "TOGGLE_PLAY":
       return { ...state, playing: !state.playing };
     case "SET_PLAYING":
@@ -2025,6 +2047,24 @@ export function PlayerProvider({ children }) {
     movePlaylistTrack: (playlistId, from, to) => dispatch({ type: "MOVE_PLAYLIST_TRACK", playlistId, from, to }),
     movePlaylist: (from, to) => dispatch({ type: "MOVE_PLAYLIST", from, to }),
     dismissResumePrompt: () => dispatch({ type: "SET_RESUME_PROMPT", prompt: null }),
+    // "Not now" — and every other way out of the prompt that isn't
+    // Resume. Declining doesn't just dismiss the question: it drops the
+    // queue that was waiting, so the bar goes away and the next thing
+    // tapped starts clean. The persisted record is overwritten too, or a
+    // relaunch would bring the same queue back and ask again.
+    declineResume: () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.removeAttribute("src");
+        audioRef.current.load();
+      }
+      dispatch({ type: "CLEAR_QUEUE" });
+      // The persist effect below bails on an empty queue (so a transient
+      // empty state can't wipe a good record), which means clearing has
+      // to be written explicitly here.
+      persistPlaybackState({ trackIds: [], index: 0, position: 0 }).catch(() => {});
+    },
+    hideMiniPlayer: () => dispatch({ type: "SET_MINI_PLAYER_HIDDEN", hidden: true }),
     dismissBackgroundKillNotice: () => dispatch({ type: "SET_BACKGROUND_KILL_NOTICE", value: false }),
     fixAlbumTrackOrder: async (album) => {
       dispatch({ type: "SET_TRACK_ORDER_STATUS", status: "Looking up track order…" });
@@ -2131,6 +2171,7 @@ export function PlayerProvider({ children }) {
     state.eqPreset, state.playlists, state.studioStatus, state.trackOrderStatus, state.queueToast,
     state.coverOverrides, state.backgroundKillNotice, state.newMusicFound, state.checkingForNewMusic,
     state.trackMetadata, state.trustBaseline, state.playlistUndo, state.resumePrompt,
+    state.miniPlayerHidden,
   ]);
 
   return (
