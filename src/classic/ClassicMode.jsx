@@ -25,7 +25,7 @@ const VIEWPORT_PAD = 12;
 const MAX_SCALE = 3.4;
 
 // Rows that fit the 4:3 screen below the title bar: 129 units tall, 16 of
-// which is the title bar, at 14.1 units per row. Hardcoded rather than
+// which is the title bar, at 14 units per row. Hardcoded rather than
 // measured because the ratio is fixed by those constants in classic.css —
 // if one changes, both change together.
 const VISIBLE_ROWS = 8;

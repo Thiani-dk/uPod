@@ -101,12 +101,16 @@
 
 /* ---------- the screen (4:3) ---------- */
 
+/* Sized so the *inner* screen is exactly 172x129 — a true 4:3 — once
+   border-box has taken the 3-unit bezel out of the box. Getting this
+   wrong doesn't look wrong, it just quietly shortens the screen, and the
+   list below is sized to fill it exactly. */
 .cl-bezel {
   position: absolute;
-  top: calc(14 * var(--u));
-  left: calc(14 * var(--u));
-  width: calc(172 * var(--u));
-  height: calc(129 * var(--u));
+  top: calc(11 * var(--u));
+  left: calc(11 * var(--u));
+  width: calc(178 * var(--u));
+  height: calc(135 * var(--u));
   border-radius: calc(3 * var(--u));
   padding: calc(3 * var(--u));
   background: linear-gradient(180deg, #0e0e11 0%, #1a1a1f 100%);
@@ -167,8 +171,12 @@
   background: #f7f8fa;
 }
 
+/* 16 units of title bar plus eight of these is 128 of the screen's 129 —
+   the one unit of slack absorbs sub-pixel rounding at small scale
+   factors, which is the difference between eight rows and seven and a
+   half. VISIBLE_ROWS in ClassicMode.jsx is the other half of this. */
 .cl-row {
-  flex: 0 0 calc(14.1 * var(--u));
+  flex: 0 0 calc(14 * var(--u));
   display: flex;
   align-items: center;
   gap: calc(4 * var(--u));
