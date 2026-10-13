@@ -143,6 +143,13 @@ const initialState = {
   // Which of the Classic skin's three device colorways is in use:
   // "white", "black" or "marine". See CLASSIC_COLORWAYS.
   classicColorway: "white",
+  // Degrees of wheel rotation per step: "slow" | "medium" | "fast". How
+  // far a thumb travels for one row is the single thing that decides
+  // whether the wheel feels right, and the right answer is personal — see
+  // WHEEL_STEP_DEGREES in src/classic/ClickWheel.jsx.
+  classicWheelSensitivity: "medium",
+  // "off" | "light" | "medium" | "strong" — the tick under each step.
+  classicHapticStrength: "medium",
   buttonPack: "modern",
   fontFamily: "inter",
   accentColor: FALLBACK_ACCENT,
@@ -585,6 +592,8 @@ function reducer(state, action) {
         theme: saved.theme ?? state.theme,
         classicMode: saved.classicMode ?? state.classicMode,
         classicColorway: saved.classicColorway ?? state.classicColorway,
+        classicWheelSensitivity: saved.classicWheelSensitivity ?? state.classicWheelSensitivity,
+        classicHapticStrength: saved.classicHapticStrength ?? state.classicHapticStrength,
         buttonPack: saved.buttonPack ?? state.buttonPack,
         fontFamily: saved.fontFamily ?? state.fontFamily,
       };
@@ -595,6 +604,10 @@ function reducer(state, action) {
       return { ...state, classicMode: action.on };
     case "SET_CLASSIC_COLORWAY":
       return { ...state, classicColorway: action.colorway };
+    case "SET_CLASSIC_WHEEL_SENSITIVITY":
+      return { ...state, classicWheelSensitivity: action.sensitivity };
+    case "SET_CLASSIC_HAPTIC_STRENGTH":
+      return { ...state, classicHapticStrength: action.strength };
     case "SET_BUTTON_PACK":
       return { ...state, buttonPack: action.pack };
     case "SET_FONT_FAMILY":
@@ -1554,12 +1567,17 @@ export function PlayerProvider({ children }) {
       theme: state.theme,
       classicMode: state.classicMode,
       classicColorway: state.classicColorway,
+      classicWheelSensitivity: state.classicWheelSensitivity,
+      classicHapticStrength: state.classicHapticStrength,
       buttonPack: state.buttonPack,
       fontFamily: state.fontFamily,
     }).catch((err) => {
       console.warn("Couldn't persist settings:", err);
     });
-  }, [state.theme, state.classicMode, state.classicColorway, state.buttonPack, state.fontFamily]);
+  }, [
+    state.theme, state.classicMode, state.classicColorway, state.classicWheelSensitivity,
+    state.classicHapticStrength, state.buttonPack, state.fontFamily,
+  ]);
 
   // On launch: request storage permission (needed for the lazy per-track
   // reads playback does later, regardless of cache state). If it's not
@@ -1971,6 +1989,8 @@ export function PlayerProvider({ children }) {
     setTheme: (theme) => dispatch({ type: "SET_THEME", theme }),
     setClassicMode: (on) => dispatch({ type: "SET_CLASSIC_MODE", on }),
     setClassicColorway: (colorway) => dispatch({ type: "SET_CLASSIC_COLORWAY", colorway }),
+    setClassicWheelSensitivity: (sensitivity) => dispatch({ type: "SET_CLASSIC_WHEEL_SENSITIVITY", sensitivity }),
+    setClassicHapticStrength: (strength) => dispatch({ type: "SET_CLASSIC_HAPTIC_STRENGTH", strength }),
     setButtonPack: (pack) => dispatch({ type: "SET_BUTTON_PACK", pack }),
     setFontFamily: (fontId) => {
       loadFont(fontId);
@@ -2164,7 +2184,7 @@ export function PlayerProvider({ children }) {
   }, [
     state.library, state.albums, state.queue, state.queueIndex, state.playing,
     state.shuffle, state.repeatMode, state.playbackRate, state.theme, state.buttonPack,
-    state.classicMode, state.classicColorway,
+    state.classicMode, state.classicColorway, state.classicWheelSensitivity, state.classicHapticStrength,
     state.fontFamily, state.accentColor, state.artDim, state.selectedFolderName, state.loadingLibrary,
     state.libraryHydrating,
     state.libraryError, state.libraryProgress, state.pendingFolderConfirm, state.eqBands,

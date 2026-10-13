@@ -12,18 +12,46 @@
   position: fixed;
   inset: 0;
   display: flex;
-  align-items: center;
+  /* Bottom-anchored rather than centred. On a 9:20 phone the body is
+     width-bound, so centring leaves the wheel floating in the middle of
+     the screen where a thumb has to reach up for it. Sitting it near the
+     bottom puts the wheel under the thumb and spends the leftover height
+     above the screen, where nothing needs to be touched. */
+  align-items: flex-end;
   justify-content: center;
   /* The room the device sits in. Deliberately dark and flat in every
      colorway so the body reads as an object rather than part of the UI. */
   background: radial-gradient(120% 90% at 50% 0%, #26262b 0%, #121214 55%, #08080a 100%);
   /* Keeps the body clear of the status bar / gesture area even though the
-     scale factor already reserves padding. */
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+     scale factor already reserves padding. The extra 20px at the bottom
+     is the gap the bottom-anchored body sits on; it has to be part of
+     this one declaration rather than a later padding-bottom, which would
+     drop the safe-area inset and let the wheel run under the gesture
+     bar. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) calc(env(safe-area-inset-bottom) + 20px) env(safe-area-inset-left);
   overflow: hidden;
+}
+
+/* The grey flash Android's WebView paints over anything tappable, and
+   every other default that gives the skin away as a web page: text
+   selection on a long press, the double-tap zoom delay, the focus ring.
+   Applied to the subtree rather than per-element so a control added later
+   can't quietly reintroduce it. Pressed feedback is drawn deliberately
+   instead — see .cl-hub:active and .cl-row-tappable:active. */
+.classic-root,
+.classic-root * {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
   user-select: none;
   -webkit-user-select: none;
-  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+.classic-root button {
+  touch-action: manipulation;
+}
+/* The wheel is the exception: it needs every move event, so the browser
+   must not be allowed to claim the gesture as a scroll or a zoom. */
+.cl-wheel {
   touch-action: none;
 }
 
@@ -215,6 +243,14 @@
   height: calc(6 * var(--u));
   border-radius: 50%;
   background: var(--cl-accent);
+}
+
+/* Rows are driven by the wheel, but tapping one directly works too, so
+   the skin is never slower than the normal UI for something you can see.
+   Pressed state is a brightness dip on the row itself — no box, nothing
+   that moves the list. */
+.cl-row-tappable:active {
+  filter: brightness(0.93);
 }
 
 .cl-row.sel {
@@ -414,12 +450,16 @@
 }
 .cl-wheel-quadrant-flash.on { opacity: 1; transition: none; }
 
+/* 46 units across on a 150-unit wheel: a 23-unit radius against the
+   wheel's 75, i.e. the ~30% the original uses. At the scale factor this
+   phone lands on that is still ~68px, comfortably over the 44px floor
+   every target here has to clear. */
 .cl-hub {
   position: absolute;
-  top: calc(46 * var(--u));
-  left: calc(46 * var(--u));
-  width: calc(58 * var(--u));
-  height: calc(58 * var(--u));
+  top: calc(52 * var(--u));
+  left: calc(52 * var(--u));
+  width: calc(46 * var(--u));
+  height: calc(46 * var(--u));
   border-radius: 50%;
   border: 0;
   padding: 0;
@@ -430,8 +470,24 @@
     0 calc(1 * var(--u)) calc(2 * var(--u)) rgba(0, 0, 0, 0.12);
   touch-action: manipulation;
 }
+/* Pressed feedback: the hub sinks a little and dims, rather than
+   acquiring a grey box. Fast enough to feel like a button bottoming out
+   and not like an animation. */
 .cl-hub:active {
   background: radial-gradient(circle at 50% 30%, var(--hub-bottom) 0%, var(--hub-top) 100%);
+  transform: scale(0.955);
+  filter: brightness(0.94);
+}
+.cl-hub {
+  transition: transform 70ms ease-out, filter 70ms ease-out;
+}
+
+/* While a previous/next hold is seeking, its marking brightens — the one
+   piece of feedback that says the press became a seek rather than a tap
+   that hasn't fired yet. */
+.cl-wheel-mark.seeking {
+  color: var(--cl-accent);
+  filter: brightness(1.15);
 }
 
 /* ---------- the one piece of normal-UI chrome: the way out ---------- */
@@ -451,4 +507,9 @@
   font-size: 11px;
   font-weight: 600;
   backdrop-filter: blur(8px);
+  transition: transform 70ms ease-out, opacity 70ms ease-out;
+}
+.cl-exit:active {
+  transform: scale(0.94);
+  opacity: 0.75;
 }

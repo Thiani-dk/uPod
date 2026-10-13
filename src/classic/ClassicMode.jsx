@@ -6,7 +6,8 @@ import { usePlayerState, usePlayerActions, usePlayerTime } from "../store/Player
 import { albumIdForTrack } from "../audio/metadata";
 import { pushBackHandler } from "../utils/backHandlerStack";
 import NoteMark from "../components/NoteMark";
-import ClickWheel from "./ClickWheel";
+import ClickWheel, { WHEEL_SENSITIVITIES } from "./ClickWheel";
+import { HAPTIC_STRENGTHS } from "./haptics";
 import "./classic.css";
 
 // The device body in layout units. Every other dimension in classic.css
@@ -62,6 +63,7 @@ export default function ClassicMode() {
   const {
     albums, library, generalLibrary, playlists, coverOverrides,
     queue, queueIndex, playing, shuffle, repeatMode, classicColorway,
+    classicWheelSensitivity, classicHapticStrength,
   } = usePlayerState();
   const { currentTime, duration } = usePlayerTime();
   const actions = usePlayerActions();
@@ -320,6 +322,18 @@ export default function ClassicMode() {
               arrow: true,
               onSelect: () => push({ kind: "colorway" }),
             },
+            {
+              label: "Wheel speed",
+              value: WHEEL_SENSITIVITIES.find((w) => w.id === classicWheelSensitivity)?.label,
+              arrow: true,
+              onSelect: () => push({ kind: "wheelspeed" }),
+            },
+            {
+              label: "Haptics",
+              value: HAPTIC_STRENGTHS.find((h) => h.id === classicHapticStrength)?.label,
+              arrow: true,
+              onSelect: () => push({ kind: "haptics" }),
+            },
             { label: "Shuffle", value: shuffle ? "On" : "Off", onSelect: actions.toggleShuffle },
             { label: "Repeat", value: REPEAT_LABELS[repeatMode] || "Off", onSelect: actions.cycleRepeat },
             { label: "Leave Classic mode", onSelect: () => actions.setClassicMode(false) },
@@ -336,13 +350,39 @@ export default function ClassicMode() {
           })),
         };
 
+      // Both of these are deliberately tunable from inside the skin
+      // rather than only from the app's Settings screen: the whole point
+      // is to change one and immediately feel the wheel under your thumb,
+      // which you can't do from the other side of a mode switch. They're
+      // in the normal Settings screen too.
+      case "wheelspeed":
+        return {
+          title: "Wheel speed",
+          rows: WHEEL_SENSITIVITIES.map((w) => ({
+            label: w.label,
+            value: w.id === classicWheelSensitivity ? "✓" : undefined,
+            onSelect: () => actions.setClassicWheelSensitivity(w.id),
+          })),
+        };
+
+      case "haptics":
+        return {
+          title: "Haptics",
+          rows: HAPTIC_STRENGTHS.map((h) => ({
+            label: h.label,
+            value: h.id === classicHapticStrength ? "✓" : undefined,
+            onSelect: () => actions.setClassicHapticStrength(h.id),
+          })),
+        };
+
       default:
         return { title: "uPod", rows: [] };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     top, artists, sortedAlbums, songs, playlists, queue, queueIndex, currentTrack,
-    shuffle, repeatMode, classicColorway, actions, push, pop, showNowPlaying, tracksOfPlaylist,
+    shuffle, repeatMode, classicColorway, classicWheelSensitivity, classicHapticStrength,
+    actions, push, pop, showNowPlaying, tracksOfPlaylist,
   ]);
 
   // --- wheel wiring --------------------------------------------------
@@ -391,6 +431,26 @@ export default function ClassicMode() {
 
   useEffect(() => () => cancelAnimationFrame(scrubFrameRef.current), []);
 
+  // Holding previous/next on the wheel seeks within the track rather than
+  // changing track. Reads the live position from the ref the scrub path
+  // already maintains, so a hold that starts mid-scrub carries on from
+  // where the scrub got to instead of snapping back to the element's
+  // lagging currentTime.
+  const seekStateRef = useRef();
+  seekStateRef.current = { currentTime, duration, hasTrack: Boolean(currentTrack) };
+  const handleSeekBy = useCallback(
+    (seconds) => {
+      const { currentTime: now, duration: total, hasTrack } = seekStateRef.current;
+      if (!hasTrack || !Number.isFinite(total) || total <= 0) return;
+      const from = scrubRef.current ?? now;
+      const target = Math.min(Math.max(0, from + seconds), total);
+      scrubRef.current = target;
+      setScrubPreview(target);
+      actions.seek(target);
+    },
+    [actions]
+  );
+
   const handleSelect = useCallback(() => {
     if (top.kind === "np") {
       push({ kind: "queue" });
@@ -423,17 +483,30 @@ export default function ClassicMode() {
                 coverOverrides={coverOverrides}
               />
             ) : (
-              <ListScreen title={screen.title} rows={screen.rows} sel={top.sel} empty={screen.empty} playing={playing} />
+              <ListScreen
+                title={screen.title}
+                rows={screen.rows}
+                sel={top.sel}
+                empty={screen.empty}
+                playing={playing}
+                onTapRow={(index) => {
+                  setSel(index);
+                  screen.rows[index]?.onSelect?.();
+                }}
+              />
             )}
           </div>
         </div>
         <ClickWheel
+          sensitivity={classicWheelSensitivity}
+          hapticStrength={classicHapticStrength}
           onStep={handleStep}
           onSelect={handleSelect}
           onMenu={pop}
           onPrev={actions.previous}
           onNext={actions.next}
           onPlayPause={actions.togglePlay}
+          onSeekBy={handleSeekBy}
         />
       </div>
     </div>
@@ -462,7 +535,7 @@ function PlayPip() {
   );
 }
 
-function ListScreen({ title, rows, sel, empty, playing }) {
+function ListScreen({ title, rows, sel, empty, playing, onTapRow }) {
   const start = windowStart(sel, rows.length);
   const visible = rows.slice(start, start + VISIBLE_ROWS);
   return (
@@ -475,7 +548,17 @@ function ListScreen({ title, rows, sel, empty, playing }) {
           {visible.map((row, i) => {
             const index = start + i;
             return (
-              <div key={row.key || `${index}-${row.label}`} className={`cl-row ${index === sel ? "sel" : ""}`}>
+              // Tappable as well as wheel-driven. The wheel is the point
+              // of the skin, but refusing a direct tap on something
+              // already on screen would make it strictly slower than the
+              // normal UI for no reason. A row is ~21 CSS px tall here —
+              // that's the 4:3 screen's doing, not a choice, so the wheel
+              // stays the reliable way to pick one.
+              <div
+                key={row.key || `${index}-${row.label}`}
+                className={`cl-row cl-row-tappable ${index === sel ? "sel" : ""}`}
+                onClick={() => onTapRow?.(index)}
+              >
                 {row.nowPlaying && <span className="cl-row-playing" />}
                 <span className="cl-row-label">{row.label}</span>
                 {row.value && <span className="cl-row-value">{row.value}</span>}

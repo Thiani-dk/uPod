@@ -9,6 +9,8 @@ import NoteMark from "../components/NoteMark";
 import { BUTTON_PACKS } from "../components/TransportButtons";
 import { getMusicFolderPath, setMusicFolderPath, MUSIC_FOLDER_ROOT } from "../audio/nativeFolder";
 import { BACKGROUND_PLAYBACK_GUIDANCE } from "../utils/backgroundPlaybackWatchdog";
+import { WHEEL_SENSITIVITIES } from "../classic/ClickWheel";
+import { HAPTIC_STRENGTHS } from "../classic/haptics";
 
 function PackPreview({ pack }) {
   const { shuffle: ShuffleIcon, back: BackIcon, forward: ForwardIcon, repeat: RepeatIcon } = pack.icons;
@@ -24,10 +26,10 @@ function PackPreview({ pack }) {
 }
 
 export default function Settings({ onOpenReviewTracks }) {
-  const { theme, buttonPack, fontFamily, selectedFolderName, albums, library, libraryError, loadingLibrary, libraryProgress, checkingForNewMusic, newMusicFound } =
+  const { theme, buttonPack, fontFamily, selectedFolderName, albums, library, libraryError, loadingLibrary, libraryProgress, checkingForNewMusic, newMusicFound, classicMode, classicWheelSensitivity, classicHapticStrength } =
     usePlayerState();
   const pendingReviewCount = library.filter((t) => t.possiblyNotMusic && !t.reviewStatus).length;
-  const { setTheme, setButtonPack, pickFolder, pickNativeFolder, checkForNewMusic } = usePlayerActions();
+  const { setTheme, setButtonPack, pickFolder, pickNativeFolder, checkForNewMusic, setClassicMode, setClassicWheelSensitivity, setClassicHapticStrength } = usePlayerActions();
   const inputRef = useRef(null);
   const [fontPickerOpen, setFontPickerOpen] = useState(false);
   const isNative = Capacitor.isNativePlatform();
@@ -228,6 +230,62 @@ export default function Settings({ onOpenReviewTracks }) {
             <Type size={14} style={{ marginRight: 6 }} />
             Change
           </button>
+        </div>
+      </div>
+
+      {/* The same two controls live in Classic mode's own Settings menu,
+          where you can feel the wheel change under your thumb as you pick.
+          They're here as well because that's where settings are looked
+          for, and because the mode switch itself belongs next to them. */}
+      <div>
+        <div className="settings-group-title">Classic (iPod) mode</div>
+
+        <div className="settings-row settings-row-tappable" onClick={() => setClassicMode(!classicMode)}>
+          <div>
+            <div className="settings-row-label">Classic skin</div>
+            <div className="settings-row-sub">
+              A click wheel over the same library, queue and playback.
+            </div>
+          </div>
+          <button className="ghost-btn" onClick={(e) => { e.stopPropagation(); setClassicMode(!classicMode); }}>
+            {classicMode ? "Turn off" : "Turn on"}
+          </button>
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">Wheel speed</div>
+            <div className="settings-row-sub">How far a thumb travels for one row</div>
+          </div>
+          <div className="theme-switch">
+            {WHEEL_SENSITIVITIES.map((w) => (
+              <button
+                key={w.id}
+                className={classicWheelSensitivity === w.id ? "active" : ""}
+                onClick={() => setClassicWheelSensitivity(w.id)}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">Wheel haptics</div>
+            <div className="settings-row-sub">The tick under each step</div>
+          </div>
+          <div className="theme-switch">
+            {HAPTIC_STRENGTHS.map((h) => (
+              <button
+                key={h.id}
+                className={classicHapticStrength === h.id ? "active" : ""}
+                onClick={() => setClassicHapticStrength(h.id)}
+              >
+                {h.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

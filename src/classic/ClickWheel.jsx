@@ -1,17 +1,46 @@
 // src/classic/ClickWheel.jsx
-import React, { useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { classicTick } from "./haptics";
 
-// Degrees of rotation per emitted step. 15° gives 24 steps per full
-// revolution, which lands between "a flick moves one row" (too slow to
-// cross a 900-track list) and "a flick overshoots the list" — a quarter
-// turn is six rows, a full turn is a screenful of three.
-const STEP_DEG = 15;
+// Degrees of rotation per emitted step, per sensitivity setting. "Medium"
+// is 20°, i.e. 18 steps per revolution: a quarter turn is four or five
+// rows, a full turn is half a screenful. Slow and fast are roughly a
+// third either side of it, which is enough to feel like a different wheel
+// without either becoming unusable.
+export const WHEEL_STEP_DEGREES = { slow: 28, medium: 20, fast: 13 };
 
-// A press is only read as a compass tap if the finger stayed within this
-// fraction of the wheel radius. Scaling it to the radius rather than
-// using a fixed px value keeps the feel identical at every --u.
-const TAP_TRAVEL_FRACTION = 0.085;
+export const WHEEL_SENSITIVITIES = [
+  { id: "slow", label: "Slow" },
+  { id: "medium", label: "Medium" },
+  { id: "fast", label: "Fast" },
+];
+
+// Rotation doesn't begin until the finger has swept this far. Without a
+// deadband, the tiny angular drift in any real press — a thumb rolls, it
+// doesn't pivot — reads as rotation and swallows the tap.
+const ROTATE_START_DEG = 10;
+
+// A press only counts as a tap if the finger stayed inside this many
+// pixels. The time limit is deliberately applied only to previous/next:
+// those are the two quadrants where a long press means something else
+// (seek), so a press that outlived the tap window has already been
+// answered by the hold and must not also fire the button. MENU and
+// play/pause have no hold behaviour, so enforcing a deadline there would
+// only create presses that do nothing at all — no seek, no button, no
+// feedback — which is exactly how a control earns a reputation for
+// missing taps.
+const TAP_MAX_TRAVEL_PX = 8;
+const TAP_MAX_MS = 250;
+
+// Holding previous/next seeks. The first jump waits out HOLD_START_MS so
+// an ordinary tap is never a seek, then repeats on a fixed interval with
+// the jump growing each time: a brief hold nudges, a long one crosses a
+// track. Capped so the far end of a hold stays steerable.
+const HOLD_START_MS = 450;
+const HOLD_INTERVAL_MS = 180;
+const HOLD_FIRST_JUMP_S = 2;
+const HOLD_ACCELERATION = 1.35;
+const HOLD_MAX_JUMP_S = 20;
 
 // Normalizes a raw angle difference into (-180, 180] so crossing the
 // atan2 discontinuity at ±180° reads as a small step in the direction the
@@ -23,10 +52,10 @@ function normalizeDelta(deg) {
   return d;
 }
 
-// Which compass point a tap at (dx, dy) from the wheel centre belongs to.
-// Each marking owns the full 90° quadrant centred on it, so there is no
-// dead angle anywhere on the ring. dy is screen-space (down positive), so
-// -90° is up.
+// Which compass point a press at (dx, dy) from the wheel centre belongs
+// to. Each marking owns the full 90° quadrant centred on it, so there is
+// no dead angle anywhere on the ring. dy is screen-space (down positive),
+// so -90° is up.
 function quadrantFor(dx, dy) {
   const deg = (Math.atan2(dy, dx) * 180) / Math.PI;
   if (deg >= -135 && deg < -45) return "menu";
@@ -37,17 +66,67 @@ function quadrantFor(dx, dy) {
 
 /* Rotation and the four compass buttons on one surface, the way the
    original works: the ring is a single pointer target and the gesture
-   decides what the press meant. A drag that produces at least one step is
-   rotation and never also fires a button; a press that produces none and
-   stayed put is a tap on whichever quadrant it landed in.
+   decides what the press meant.
 
-   onStep(direction) is called once per STEP_DEG crossed, with +1
-   clockwise / -1 counter-clockwise, and is what every screen uses to move
-   a selection or scrub. */
-export default function ClickWheel({ onStep, onSelect, onMenu, onPrev, onNext, onPlayPause }) {
+   Three outcomes, and exactly one of them happens per press:
+   - swept past ROTATE_START_DEG -> rotation. Every button is off the
+     table from that moment, including on release, so scrolling a long
+     list can never also fire play/pause.
+   - held on previous/next past HOLD_START_MS -> accelerating seek, and
+     the release is swallowed.
+   - lifted inside TAP_MAX_TRAVEL_PX and TAP_MAX_MS -> a tap on whichever
+     quadrant it landed in.
+
+   onStep(direction) fires once per step with +1 clockwise / -1
+   counter-clockwise; onSeekBy(seconds) fires repeatedly during a hold. */
+export default function ClickWheel({
+  sensitivity = "medium",
+  hapticStrength = "medium",
+  onStep,
+  onSelect,
+  onMenu,
+  onPrev,
+  onNext,
+  onPlayPause,
+  onSeekBy,
+}) {
   const dragRef = useRef(null);
+  const holdRef = useRef({ timer: 0, interval: 0 });
   const [active, setActive] = useState(false);
+  const [holding, setHolding] = useState(null);
   const [flash, setFlash] = useState(null);
+
+  // Read inside pointer handlers that outlive the render they were
+  // attached in (the hold timers especially), so a setting changed
+  // mid-gesture doesn't get lost and doesn't need the gesture restarted.
+  const configRef = useRef();
+  configRef.current = { sensitivity, hapticStrength, onSeekBy };
+
+  const stopHold = useCallback(() => {
+    clearTimeout(holdRef.current.timer);
+    clearInterval(holdRef.current.interval);
+    holdRef.current = { timer: 0, interval: 0 };
+    setHolding(null);
+  }, []);
+
+  useEffect(() => stopHold, [stopHold]);
+
+  function tick() {
+    classicTick(configRef.current.hapticStrength);
+  }
+
+  function startHold(zone) {
+    const dir = zone === "next" ? 1 : -1;
+    let jump = HOLD_FIRST_JUMP_S;
+    setHolding(zone);
+    configRef.current.onSeekBy?.(dir * jump);
+    tick();
+    holdRef.current.interval = setInterval(() => {
+      jump = Math.min(jump * HOLD_ACCELERATION, HOLD_MAX_JUMP_S);
+      configRef.current.onSeekBy?.(dir * jump);
+      tick();
+    }, HOLD_INTERVAL_MS);
+  }
 
   function centreOf(el) {
     const r = el.getBoundingClientRect();
@@ -62,16 +141,21 @@ export default function ClickWheel({ onStep, onSelect, onMenu, onPrev, onNext, o
     // propagation), but a press outside the ring circle can, via the
     // square bounding box of a round element.
     if (Math.hypot(dx, dy) > radius) return;
+    const zone = quadrantFor(dx, dy);
     dragRef.current = {
       cx,
       cy,
       radius,
+      zone,
       startX: e.clientX,
       startY: e.clientY,
+      startAt: Date.now(),
       lastAngle: (Math.atan2(dy, dx) * 180) / Math.PI,
+      sweep: 0,
       residual: 0,
-      steps: 0,
+      rotating: false,
       travel: 0,
+      held: false,
     };
     setActive(true);
     // Keeps the drag alive if the finger leaves the ring mid-rotation
@@ -84,23 +168,50 @@ export default function ClickWheel({ onStep, onSelect, onMenu, onPrev, onNext, o
     } catch {
       /* no capture; the ring still gets moves while the finger is on it */
     }
+    if (zone === "prev" || zone === "next") {
+      holdRef.current.timer = setTimeout(() => {
+        const d = dragRef.current;
+        // A hold only starts if the finger is still down and still hasn't
+        // turned into a rotation.
+        if (!d || d.rotating) return;
+        d.held = true;
+        startHold(zone);
+      }, HOLD_START_MS);
+    }
   }
 
   function handlePointerMove(e) {
     const d = dragRef.current;
     if (!d) return;
     const angle = (Math.atan2(e.clientY - d.cy, e.clientX - d.cx) * 180) / Math.PI;
-    d.residual += normalizeDelta(angle - d.lastAngle);
+    const delta = normalizeDelta(angle - d.lastAngle);
     d.lastAngle = angle;
     d.travel = Math.max(d.travel, Math.hypot(e.clientX - d.startX, e.clientY - d.startY));
+
+    if (!d.rotating) {
+      // Signed, so a thumb that wobbles back and forth never accumulates
+      // its way past the deadband — only a sweep that keeps going one way
+      // becomes rotation.
+      d.sweep += delta;
+      if (Math.abs(d.sweep) < ROTATE_START_DEG) return;
+      d.rotating = true;
+      stopHold();
+      d.held = false;
+      // The sweep that crossed the deadband is consumed by starting the
+      // rotation rather than counted towards the first step, so the first
+      // step still takes a full step's worth of travel after it.
+      d.residual = 0;
+    }
+
+    d.residual += delta;
+    const stepDeg = WHEEL_STEP_DEGREES[configRef.current.sensitivity] || WHEEL_STEP_DEGREES.medium;
     // A single move event can span more than one step (a fast flick, or a
     // dropped frame), so drain the accumulator rather than emitting once.
-    while (Math.abs(d.residual) >= STEP_DEG) {
+    while (Math.abs(d.residual) >= stepDeg) {
       const dir = d.residual > 0 ? 1 : -1;
-      d.residual -= dir * STEP_DEG;
-      d.steps += 1;
+      d.residual -= dir * stepDeg;
       onStep?.(dir);
-      classicTick();
+      tick();
     }
   }
 
@@ -108,14 +219,21 @@ export default function ClickWheel({ onStep, onSelect, onMenu, onPrev, onNext, o
     const d = dragRef.current;
     dragRef.current = null;
     setActive(false);
+    stopHold();
     if (!d) return;
-    if (d.steps > 0 || d.travel > d.radius * TAP_TRAVEL_FRACTION) return;
+    // A rotation or a hold has already done what the press meant. Firing
+    // a button on top of it is the bug this whole branch exists to stop.
+    if (d.rotating || d.held) return;
+    if (d.travel > TAP_MAX_TRAVEL_PX) return;
+
     const dx = e.clientX - d.cx;
     const dy = e.clientY - d.cy;
-    const zone = quadrantFor(dx, dy);
+    const held = Date.now() - d.startAt > TAP_MAX_MS;
+    if (held && (d.zone === "prev" || d.zone === "next")) return;
     setFlash({ x: `${((dx + d.radius) / (d.radius * 2)) * 100}%`, y: `${((dy + d.radius) / (d.radius * 2)) * 100}%` });
     setTimeout(() => setFlash(null), 110);
-    classicTick();
+    tick();
+    const zone = quadrantFor(dx, dy);
     if (zone === "menu") onMenu?.();
     else if (zone === "next") onNext?.();
     else if (zone === "playpause") onPlayPause?.();
@@ -125,6 +243,7 @@ export default function ClickWheel({ onStep, onSelect, onMenu, onPrev, onNext, o
   function handlePointerCancel() {
     dragRef.current = null;
     setActive(false);
+    stopHold();
   }
 
   return (
@@ -142,10 +261,10 @@ export default function ClickWheel({ onStep, onSelect, onMenu, onPrev, onNext, o
         style={flash ? { "--flash-x": flash.x, "--flash-y": flash.y } : undefined}
       />
       <div className="cl-wheel-mark menu">MENU</div>
-      <div className="cl-wheel-mark left">
+      <div className={`cl-wheel-mark left ${holding === "prev" ? "seeking" : ""}`}>
         <SkipGlyph dir="back" />
       </div>
-      <div className="cl-wheel-mark right">
+      <div className={`cl-wheel-mark right ${holding === "next" ? "seeking" : ""}`}>
         <SkipGlyph dir="forward" />
       </div>
       <div className="cl-wheel-mark bottom">
@@ -160,7 +279,7 @@ export default function ClickWheel({ onStep, onSelect, onMenu, onPrev, onNext, o
         onPointerDown={(e) => e.stopPropagation()}
         onPointerUp={(e) => e.stopPropagation()}
         onClick={() => {
-          classicTick();
+          tick();
           onSelect?.();
         }}
       />
