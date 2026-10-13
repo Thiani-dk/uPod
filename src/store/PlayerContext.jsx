@@ -136,6 +136,13 @@ const initialState = {
   repeatMode: "off",
   playbackRate: 1.0,
   theme: "glass",
+  // The Classic (iPod) skin: a complete alternative front-end over the
+  // same player state, queue and library (see src/classic/). Purely a
+  // presentation switch — nothing about playback behaves differently.
+  classicMode: false,
+  // Which of the Classic skin's three device colorways is in use:
+  // "white", "black" or "marine". See CLASSIC_COLORWAYS.
+  classicColorway: "white",
   buttonPack: "modern",
   fontFamily: "inter",
   accentColor: FALLBACK_ACCENT,
@@ -554,12 +561,18 @@ function reducer(state, action) {
       return {
         ...state,
         theme: saved.theme ?? state.theme,
+        classicMode: saved.classicMode ?? state.classicMode,
+        classicColorway: saved.classicColorway ?? state.classicColorway,
         buttonPack: saved.buttonPack ?? state.buttonPack,
         fontFamily: saved.fontFamily ?? state.fontFamily,
       };
     }
     case "SET_THEME":
       return { ...state, theme: action.theme };
+    case "SET_CLASSIC_MODE":
+      return { ...state, classicMode: action.on };
+    case "SET_CLASSIC_COLORWAY":
+      return { ...state, classicColorway: action.colorway };
     case "SET_BUTTON_PACK":
       return { ...state, buttonPack: action.pack };
     case "SET_FONT_FAMILY":
@@ -1517,12 +1530,14 @@ export function PlayerProvider({ children }) {
     if (!settingsHydratedRef.current) return;
     persistSettings({
       theme: state.theme,
+      classicMode: state.classicMode,
+      classicColorway: state.classicColorway,
       buttonPack: state.buttonPack,
       fontFamily: state.fontFamily,
     }).catch((err) => {
       console.warn("Couldn't persist settings:", err);
     });
-  }, [state.theme, state.buttonPack, state.fontFamily]);
+  }, [state.theme, state.classicMode, state.classicColorway, state.buttonPack, state.fontFamily]);
 
   // On launch: request storage permission (needed for the lazy per-track
   // reads playback does later, regardless of cache state). If it's not
@@ -1932,6 +1947,8 @@ export function PlayerProvider({ children }) {
       dispatch({ type: "CREATE_PLAYLIST_WITH_TRACK", name, tracks: Array.isArray(tracks) ? tracks : tracks ? [tracks] : [] }),
     saveQueueAsPlaylist: (name) => dispatch({ type: "SAVE_QUEUE_AS_PLAYLIST", name }),
     setTheme: (theme) => dispatch({ type: "SET_THEME", theme }),
+    setClassicMode: (on) => dispatch({ type: "SET_CLASSIC_MODE", on }),
+    setClassicColorway: (colorway) => dispatch({ type: "SET_CLASSIC_COLORWAY", colorway }),
     setButtonPack: (pack) => dispatch({ type: "SET_BUTTON_PACK", pack }),
     setFontFamily: (fontId) => {
       loadFont(fontId);
@@ -2107,6 +2124,7 @@ export function PlayerProvider({ children }) {
   }, [
     state.library, state.albums, state.queue, state.queueIndex, state.playing,
     state.shuffle, state.repeatMode, state.playbackRate, state.theme, state.buttonPack,
+    state.classicMode, state.classicColorway,
     state.fontFamily, state.accentColor, state.artDim, state.selectedFolderName, state.loadingLibrary,
     state.libraryHydrating,
     state.libraryError, state.libraryProgress, state.pendingFolderConfirm, state.eqBands,

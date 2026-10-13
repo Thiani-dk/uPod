@@ -1,0 +1,446 @@
+/* src/classic/classic.css
+   The Classic (iPod) skin. Everything here is drawn in CSS or inline SVG
+   — no raster assets, no third-party logos, no bundled typeface.
+
+   Sizing rule for the whole file: every dimension is a multiple of --u,
+   the single scale factor ClassicMode computes from the viewport (see
+   BODY_W/BODY_H there). Nothing is in raw px except hairline borders and
+   a couple of blur radii, so the device body scales as one piece on any
+   screen instead of needing per-breakpoint tuning. */
+
+.classic-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* The room the device sits in. Deliberately dark and flat in every
+     colorway so the body reads as an object rather than part of the UI. */
+  background: radial-gradient(120% 90% at 50% 0%, #26262b 0%, #121214 55%, #08080a 100%);
+  /* Keeps the body clear of the status bar / gesture area even though the
+     scale factor already reserves padding. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
+/* ---------- colorways ---------- */
+
+/* --accent is the on-screen highlight (selection bar, progress fill);
+   the --body/--wheel/--chrome triplet is the physical shell. */
+.classic-root[data-colorway="white"] {
+  --body-top: #fdfdfe;
+  --body-bottom: #dcdce1;
+  --body-edge: #b4b4bb;
+  --wheel-top: #f4f4f6;
+  --wheel-bottom: #dadae0;
+  --wheel-edge: #b9b9c1;
+  --wheel-ink: #6d6d76;
+  --hub-top: #fbfbfc;
+  --hub-bottom: #e2e2e7;
+  --cl-accent: #2f72b8;
+  --cl-accent-dark: #1d4f87;
+}
+.classic-root[data-colorway="black"] {
+  --body-top: #35353a;
+  --body-bottom: #15151a;
+  --body-edge: #050507;
+  --wheel-top: #2e2e34;
+  --wheel-bottom: #1b1b20;
+  --wheel-edge: #0a0a0d;
+  --wheel-ink: #b6b6c0;
+  --hub-top: #333339;
+  --hub-bottom: #1d1d22;
+  --cl-accent: #c3453a;
+  --cl-accent-dark: #8e2b23;
+}
+.classic-root[data-colorway="marine"] {
+  --body-top: #3f87c4;
+  --body-bottom: #1f5486;
+  --body-edge: #143a5e;
+  --wheel-top: #eef4f9;
+  --wheel-bottom: #cfdeea;
+  --wheel-edge: #9db4c7;
+  --wheel-ink: #335f84;
+  --hub-top: #f5f9fc;
+  --hub-bottom: #dbe7f0;
+  --cl-accent: #1a6fa8;
+  --cl-accent-dark: #0f4a74;
+}
+
+/* ---------- device body ---------- */
+
+.cl-body {
+  position: relative;
+  width: calc(200 * var(--u));
+  height: calc(336 * var(--u));
+  border-radius: calc(16 * var(--u));
+  background: linear-gradient(170deg, var(--body-top) 0%, var(--body-bottom) 100%);
+  box-shadow:
+    0 0 0 1px var(--body-edge),
+    0 calc(3 * var(--u)) calc(14 * var(--u)) rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* The faint vertical sheen down the shell. Pure decoration, and pointer
+   events off so it can never swallow a wheel drag. */
+.cl-body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(100deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0) 38%, rgba(0, 0, 0, 0.1) 100%);
+  pointer-events: none;
+}
+
+/* ---------- the screen (4:3) ---------- */
+
+.cl-bezel {
+  position: absolute;
+  top: calc(14 * var(--u));
+  left: calc(14 * var(--u));
+  width: calc(172 * var(--u));
+  height: calc(129 * var(--u));
+  border-radius: calc(3 * var(--u));
+  padding: calc(3 * var(--u));
+  background: linear-gradient(180deg, #0e0e11 0%, #1a1a1f 100%);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.cl-screen {
+  width: 100%;
+  height: 100%;
+  border-radius: calc(1.5 * var(--u));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #f7f8fa;
+  color: #16181c;
+  font-size: calc(9 * var(--u));
+  line-height: 1.15;
+  letter-spacing: calc(-0.01 * var(--u));
+}
+
+.cl-titlebar {
+  flex: 0 0 calc(16 * var(--u));
+  display: flex;
+  align-items: center;
+  gap: calc(4 * var(--u));
+  padding: 0 calc(5 * var(--u));
+  font-size: calc(8.5 * var(--u));
+  font-weight: 600;
+  color: #2a2d33;
+  background: linear-gradient(180deg, #ffffff 0%, #e4e7ec 100%);
+  border-bottom: 1px solid #b9bec6;
+}
+.cl-title-text {
+  flex: 1;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The play-state pip beside the title. Reserving the same width on both
+   sides keeps the title optically centred whether or not it's showing. */
+.cl-title-side {
+  flex: 0 0 calc(18 * var(--u));
+  display: flex;
+  align-items: center;
+  color: #4a4f58;
+}
+.cl-title-side.right { justify-content: flex-end; }
+.cl-pip { display: block; width: calc(7 * var(--u)); height: calc(7 * var(--u)); }
+
+/* ---------- list screens ---------- */
+
+.cl-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #f7f8fa;
+}
+
+.cl-row {
+  flex: 0 0 calc(14.1 * var(--u));
+  display: flex;
+  align-items: center;
+  gap: calc(4 * var(--u));
+  padding: 0 calc(5 * var(--u));
+  border-bottom: 1px solid #e3e6ea;
+  overflow: hidden;
+}
+.cl-row-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cl-row-value {
+  flex: 0 0 auto;
+  font-size: calc(8 * var(--u));
+  color: #6c727c;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The chevron for rows that lead somewhere. Drawn as a rotated square
+   corner rather than a glyph so it scales with --u and needs no font. */
+.cl-row-arrow {
+  flex: 0 0 auto;
+  width: calc(3.4 * var(--u));
+  height: calc(3.4 * var(--u));
+  border-right: calc(1.3 * var(--u)) solid #9aa0aa;
+  border-top: calc(1.3 * var(--u)) solid #9aa0aa;
+  transform: rotate(45deg);
+}
+.cl-row-playing {
+  flex: 0 0 auto;
+  width: calc(6 * var(--u));
+  height: calc(6 * var(--u));
+  border-radius: 50%;
+  background: var(--cl-accent);
+}
+
+.cl-row.sel {
+  background: linear-gradient(180deg, var(--cl-accent) 0%, var(--cl-accent-dark) 100%);
+  color: #fff;
+  border-bottom-color: var(--cl-accent-dark);
+}
+.cl-row.sel .cl-row-value { color: rgba(255, 255, 255, 0.82); }
+.cl-row.sel .cl-row-arrow { border-color: rgba(255, 255, 255, 0.9); }
+.cl-row.sel .cl-row-playing { background: #fff; }
+
+.cl-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: calc(10 * var(--u));
+  color: #6c727c;
+  font-size: calc(8.5 * var(--u));
+}
+
+/* A hint strip under a list when the wheel does something non-obvious. */
+.cl-hint {
+  flex: 0 0 auto;
+  padding: calc(2.5 * var(--u)) calc(5 * var(--u));
+  font-size: calc(7 * var(--u));
+  color: #7b818b;
+  background: #eceff3;
+  border-top: 1px solid #dadee3;
+  text-align: center;
+}
+
+/* ---------- now playing ---------- */
+
+.cl-np {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: calc(6 * var(--u));
+  gap: calc(5 * var(--u));
+  background: linear-gradient(180deg, #ffffff 0%, #e8ebf0 100%);
+}
+.cl-np-top {
+  display: flex;
+  gap: calc(6 * var(--u));
+  min-height: 0;
+  flex: 1;
+}
+.cl-np-art {
+  flex: 0 0 calc(56 * var(--u));
+  width: calc(56 * var(--u));
+  height: calc(56 * var(--u));
+  border-radius: calc(2 * var(--u));
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18), 0 calc(1 * var(--u)) calc(3 * var(--u)) rgba(0, 0, 0, 0.2);
+  align-self: flex-start;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Fallback art: the track's own gradient plus a drawn note, so an
+   untagged file still gets something deliberate rather than a blank box. */
+.cl-np-art-fallback {
+  background: linear-gradient(145deg, var(--cl-accent) 0%, var(--cl-accent-dark) 100%);
+  color: rgba(255, 255, 255, 0.92);
+}
+/* NoteMark takes a px `size`, which would be fixed while everything
+   around it scales — CSS wins over the SVG's width/height attributes, so
+   the placeholder tracks --u like the box it sits in. */
+.cl-np-art .cl-note { width: calc(26 * var(--u)); height: calc(26 * var(--u)); }
+
+.cl-np-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: calc(2 * var(--u));
+  padding-top: calc(1 * var(--u));
+}
+.cl-np-title {
+  font-size: calc(9.5 * var(--u));
+  font-weight: 650;
+  color: #16181c;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cl-np-artist,
+.cl-np-album {
+  font-size: calc(8 * var(--u));
+  color: #4c525c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cl-np-album { color: #777e89; }
+.cl-np-flags {
+  margin-top: auto;
+  display: flex;
+  gap: calc(4 * var(--u));
+  font-size: calc(7 * var(--u));
+  color: var(--cl-accent-dark);
+  font-weight: 600;
+  letter-spacing: calc(0.06 * var(--u));
+}
+
+.cl-np-bar-wrap { flex: 0 0 auto; }
+.cl-np-bar {
+  height: calc(6 * var(--u));
+  border-radius: calc(3 * var(--u));
+  background: #d3d8df;
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+.cl-np-bar-fill {
+  height: 100%;
+  background: linear-gradient(180deg, var(--cl-accent) 0%, var(--cl-accent-dark) 100%);
+  border-radius: inherit;
+}
+.cl-np-times {
+  display: flex;
+  justify-content: space-between;
+  margin-top: calc(2 * var(--u));
+  font-size: calc(7.5 * var(--u));
+  color: #5c636e;
+  font-variant-numeric: tabular-nums;
+}
+.cl-np-scrub {
+  text-align: center;
+  font-size: calc(7 * var(--u));
+  color: var(--cl-accent-dark);
+  font-weight: 600;
+}
+
+/* ---------- click wheel ---------- */
+
+.cl-wheel {
+  position: absolute;
+  top: calc(167 * var(--u));
+  left: calc(25 * var(--u));
+  width: calc(150 * var(--u));
+  height: calc(150 * var(--u));
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 28%, var(--wheel-top) 0%, var(--wheel-bottom) 100%);
+  box-shadow:
+    0 0 0 1px var(--wheel-edge),
+    inset 0 calc(1 * var(--u)) calc(2 * var(--u)) rgba(255, 255, 255, 0.55),
+    inset 0 calc(-1 * var(--u)) calc(3 * var(--u)) rgba(0, 0, 0, 0.14);
+  touch-action: none;
+}
+.cl-wheel.active {
+  background: radial-gradient(circle at 50% 28%, var(--wheel-bottom) 0%, var(--wheel-top) 100%);
+}
+
+/* The four compass markings. Each is a hit zone as well as a label — the
+   whole quadrant is tappable, these just show where. */
+.cl-wheel-mark {
+  position: absolute;
+  color: var(--wheel-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.cl-wheel-mark.menu {
+  top: calc(7 * var(--u));
+  left: 0;
+  right: 0;
+  font-size: calc(9 * var(--u));
+  font-weight: 700;
+  letter-spacing: calc(0.5 * var(--u));
+}
+.cl-wheel-mark.left { left: calc(8 * var(--u)); top: calc(63 * var(--u)); }
+.cl-wheel-mark.right { right: calc(8 * var(--u)); top: calc(63 * var(--u)); }
+.cl-wheel-mark.bottom { bottom: calc(8 * var(--u)); left: 0; right: 0; }
+
+/* SVG can't take calc() in its width/height attributes, so the transport
+   glyphs are sized here instead — same --u, drawn paths either way. */
+.cl-glyph { display: block; height: calc(10 * var(--u)); }
+.cl-glyph.skip { width: calc(13 * var(--u)); }
+.cl-glyph.play { width: calc(16 * var(--u)); }
+
+/* Momentary press feedback on a compass tap. */
+.cl-wheel-quadrant-flash {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 90ms ease-out;
+  background: radial-gradient(circle at var(--flash-x) var(--flash-y), rgba(0, 0, 0, 0.14) 0%, rgba(0, 0, 0, 0) 55%);
+}
+.cl-wheel-quadrant-flash.on { opacity: 1; transition: none; }
+
+.cl-hub {
+  position: absolute;
+  top: calc(46 * var(--u));
+  left: calc(46 * var(--u));
+  width: calc(58 * var(--u));
+  height: calc(58 * var(--u));
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  background: radial-gradient(circle at 50% 30%, var(--hub-top) 0%, var(--hub-bottom) 100%);
+  box-shadow:
+    0 0 0 1px var(--wheel-edge),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 calc(1 * var(--u)) calc(2 * var(--u)) rgba(0, 0, 0, 0.12);
+  touch-action: manipulation;
+}
+.cl-hub:active {
+  background: radial-gradient(circle at 50% 30%, var(--hub-bottom) 0%, var(--hub-top) 100%);
+}
+
+/* ---------- the one piece of normal-UI chrome: the way out ---------- */
+
+.cl-exit {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 8px);
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+}

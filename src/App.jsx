@@ -8,6 +8,7 @@ import { PlayerProvider, usePlayerState, usePlayerActions } from "./store/Player
 import { consumeTopBackHandler } from "./utils/backHandlerStack";
 import { BACKGROUND_PLAYBACK_GUIDANCE } from "./utils/backgroundPlaybackWatchdog";
 import ErrorBoundary from "./components/ErrorBoundary";
+import ClassicMode from "./classic/ClassicMode";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import MiniPlayer from "./components/MiniPlayer";
@@ -55,7 +56,7 @@ const SCREEN_BACK_TARGETS = {
 const SPLASH_CEILING_MS = 8000;
 
 function Shell() {
-  const { theme, accentColor, artDim, fontFamily, queue, queueIndex, albums, backgroundKillNotice, newMusicFound, loadingLibrary, libraryHydrating, resumePrompt } =
+  const { theme, accentColor, artDim, fontFamily, queue, queueIndex, albums, backgroundKillNotice, newMusicFound, loadingLibrary, libraryHydrating, resumePrompt, classicMode } =
     usePlayerState();
   const { dismissBackgroundKillNotice, initializeLibrary, dismissNewMusicFound, pickNativeFolder } = usePlayerActions();
   // null while checking (avoids a flash of the wrong screen), then true
@@ -194,6 +195,19 @@ function Shell() {
   // onboarding a moment later.
   if (needsOnboarding === null) {
     return <div className={rootClass} data-theme={theme} style={rootStyle} />;
+  }
+
+  // The Classic skin replaces the entire normal shell, but nothing
+  // underneath it: same PlayerProvider, same queue, same library, same
+  // actions. It sits after the onboarding check so a fresh install still
+  // gets the storage-permission screen first, and inside the same root
+  // element so the chosen font still applies.
+  if (classicMode) {
+    return (
+      <div className={rootClass} data-theme={theme} style={rootStyle}>
+        <ClassicMode />
+      </div>
+    );
   }
 
   if (needsOnboarding) {

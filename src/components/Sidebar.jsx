@@ -1,12 +1,12 @@
 // src/components/Sidebar.jsx
 import React from "react";
-import { Disc3, Library, X, SlidersHorizontal, Wand2, Mic2, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
+import { Disc3, Library, X, SlidersHorizontal, Wand2, Mic2, Settings as SettingsIcon, Sun, Moon, CircleDot } from "lucide-react";
 import { usePlayerState, usePlayerActions, playlistCoverKey } from "../store/PlayerContext";
 import NoteMark from "./NoteMark";
 
 export default function Sidebar({ screen, setScreen, open, setOpen, onOpenPlaylist }) {
   const { theme, playlists, coverOverrides } = usePlayerState();
-  const { setTheme } = usePlayerActions();
+  const { setTheme, setClassicMode } = usePlayerActions();
 
   const nav = [
     { id: "nowplaying", label: "Now Playing", icon: Disc3 },
@@ -79,6 +79,16 @@ export default function Sidebar({ screen, setScreen, open, setOpen, onOpenPlayli
         )}
 
         <div className="sidebar-footer">
+          {/* The way into the Classic skin. It replaces the whole shell
+              (sidebar included), so the way back out lives inside it —
+              Settings > Leave Classic mode, or the chip top-right. */}
+          <button
+            className="theme-toggle"
+            onClick={() => { setClassicMode(true); setOpen(false); }}
+          >
+            <CircleDot size={15} />
+            <span>Classic (iPod) mode</span>
+          </button>
           <button className="theme-toggle" onClick={toggleTheme}>
             {theme === "obsidian" ? <Sun size={15} /> : <Moon size={15} />}
             <span>{theme === "obsidian" ? "Switch to Liquid Glass" : "Switch to Matte Obsidian"}</span>
