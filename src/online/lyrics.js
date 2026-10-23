@@ -10,6 +10,8 @@
 // and only a clean miss from every variant of every source counts as
 // NOT_FOUND:
 //
+//   0. a .lrc/.txt sitting next to the audio file — free, offline, and
+//      the user's own. See audio/sidecarLyrics.js.
 //   1. LRCLIB exact get, per candidate artist/title pair
 //   2. LRCLIB fuzzy search, per candidate, scored against the candidate
 //      rather than trusting the first row
@@ -42,6 +44,7 @@ import {
   loadAiLyrics,
 } from "../audio/libraryCache";
 import { lookupTrackMetadata, deriveSearchTerms, cleanForSearch as cleanDeep, splitArtistTitle } from "./metadataLookup";
+import { readSidecarLyrics } from "../audio/sidecarLyrics";
 
 // Strips common noise from downloaded-file artist/title strings before
 // searching, e.g. "[MP3DL.CC] Artist - Song (Cover)-192k" -> "Song".
@@ -186,11 +189,35 @@ export async function fetchLyricsOnline(track, { allowAi = false, allowMusicBrai
   const cached = await loadAnyCachedLyrics(track.id);
   if (cached) return cached;
 
+  // Before spending a request — or failing for being offline — look for a
+  // lyrics file the user already has next to the track.
+  const sidecar = await loadSidecarLyrics(track);
+  if (sidecar) return sidecar;
+
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
     return { ok: false, failure: LYRICS_FAILURE.OFFLINE };
   }
 
   return resolveLyricsOnline(track, { allowAi, allowMusicBrainz });
+}
+
+// Reads (and then caches) a .lrc/.txt sitting beside the audio file.
+// Cached on first read so later launches don't re-walk the folder, and so
+// the background sweep counts the track as covered and skips it.
+export async function loadSidecarLyrics(track) {
+  if (!track?.relativePath || !track?.folderPath) return null;
+  const found = await readSidecarLyrics(track);
+  if (!found) return null;
+  const entry = {
+    ok: true,
+    lyrics: found.lyrics,
+    synced: found.synced,
+    source: "a lyrics file next to the track",
+    matchedAs: found.fileName,
+    cachedAt: Date.now(),
+  };
+  await saveCachedLyrics(track.id, stripRuntimeFields(entry));
+  return entry;
 }
 
 // The cache side of the lookup on its own — what Karaoke needs to know
@@ -218,6 +245,10 @@ export async function loadAnyCachedLyrics(trackId) {
 // done that in bulk by the time it calls here. Writes through to the
 // right store on success.
 export async function resolveLyricsOnline(track, { allowAi = false, allowMusicBrainz = true } = {}) {
+  // Costs one folder read and may save every request below it.
+  const sidecar = await loadSidecarLyrics(track);
+  if (sidecar) return sidecar;
+
   const candidates = lyricsSearchCandidates(track);
   // Nothing usable to search on (a track with no tags and no filename at
   // all) — that's a no-match, not a failure of the lookup.
