@@ -10,10 +10,29 @@ android {
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            // youtubedl-android ships CPython, ffmpeg and quickjs as
+            // native binaries for four ABIs. Carrying all four roughly
+            // quadruples that payload for no benefit when the only
+            // target is this phone (CPH2409, arm64). Add "armeabi-v7a"
+            // here if uPod ever needs to run on an older 32-bit device.
+            abiFilters "arm64-v8a"
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    packaging {
+        jniLibs {
+            // Required by youtubedl-android: it unpacks the Python and
+            // ffmpeg binaries out of the APK to app storage and execs
+            // them. That only works if they are stored uncompressed and
+            // extracted at install time, which is what legacy packaging
+            // means here — with the modern default they stay compressed
+            // inside the APK and the unpack fails at runtime.
+            useLegacyPackaging = true
         }
     }
     buildTypes {
@@ -40,6 +59,12 @@ dependencies {
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
+
+    // The yt-dlp engine (the maintained fork Seal is built on). `library`
+    // is yt-dlp itself over a bundled CPython; `ffmpeg` is what performs
+    // the optional MP3 re-encode and the mux/remux after download.
+    implementation "io.github.junkfood02.youtubedl-android:library:$youtubedlAndroidVersion"
+    implementation "io.github.junkfood02.youtubedl-android:ffmpeg:$youtubedlAndroidVersion"
 }
 
 apply from: 'capacitor.build.gradle'

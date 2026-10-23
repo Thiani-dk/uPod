@@ -18,6 +18,21 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Puts uPod in the system share sheet, so a track heard in
+                 the YouTube/Instagram app can be sent here with Share >
+                 uPod. This plain ACTION_SEND + text/plain filter is the
+                 whole mechanism — it is exactly what Snaptube registers
+                 (one .activity.ActionSendDispatchActivity, same action,
+                 same category, same type). CATEGORY_DEFAULT is required:
+                 without it the filter is never considered for the
+                 implicit intent the share sheet sends.
+                 The URL is read off the intent by ShareTargetPlugin. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
 
         <provider

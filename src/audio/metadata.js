@@ -6,7 +6,14 @@
 import jsmediatags from "jsmediatags";
 import { readNativeTags } from "./nativeTagReader";
 
-export const SUPPORTED_EXTENSIONS = ["mp3", "flac", "m4a", "ogg"];
+// "opus" is here because it is what a "Best available" YouTube download
+// actually produces — YouTube's highest free audio stream is Opus, and
+// -x keeps it in its native Ogg container rather than re-encoding. A
+// WebView decodes Ogg/Opus natively, so the only thing that was missing
+// was this list recognising the extension at all; without it a
+// just-downloaded track was written to the music folder and then
+// silently skipped by every scan.
+export const SUPPORTED_EXTENSIONS = ["mp3", "flac", "m4a", "ogg", "opus"];
 
 // Filename conventions confirmed against real recorder/call-recorder output
 // (WhatsApp's PTT-/AUD-*-WA; Samsung's "Call recording_<timestamp>.m4a";

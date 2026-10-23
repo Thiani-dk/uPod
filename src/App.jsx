@@ -6,6 +6,10 @@ import { SplashScreen } from "@capacitor/splash-screen";
 import "./styles/global.css";
 import { PlayerProvider, usePlayerState, usePlayerActions } from "./store/PlayerContext";
 import { consumeTopBackHandler } from "./utils/backHandlerStack";
+import { onSharedUrl } from "./utils/shareTarget";
+import { downloadAudio, newDownloadId, prepareEngine, searchYouTube } from "./download/audioDownload";
+import { isSpotifyUrl, resolveSpotifyTrack, pickBestMatch } from "./download/spotify";
+import { describeSource } from "./download/qualityPresets";
 import { BACKGROUND_PLAYBACK_GUIDANCE } from "./utils/backgroundPlaybackWatchdog";
 import ErrorBoundary from "./components/ErrorBoundary";
 import ClassicMode from "./classic/ClassicMode";
@@ -14,6 +18,8 @@ import TopBar from "./components/TopBar";
 import MiniPlayer from "./components/MiniPlayer";
 import UndoSnackbar from "./components/UndoSnackbar";
 import ResumePromptModal from "./components/ResumePromptModal";
+import DownloadAudioModal from "./components/DownloadAudioModal";
+import DownloadDock from "./components/DownloadDock";
 import NowPlaying from "./screens/NowPlaying";
 import Library from "./screens/Library";
 import AlbumDetail from "./screens/AlbumDetail";
@@ -56,9 +62,9 @@ const SCREEN_BACK_TARGETS = {
 const SPLASH_CEILING_MS = 8000;
 
 function Shell() {
-  const { theme, accentColor, artDim, fontFamily, queue, queueIndex, albums, backgroundKillNotice, newMusicFound, loadingLibrary, libraryHydrating, resumePrompt, classicMode } =
+  const { theme, accentColor, artDim, fontFamily, queue, queueIndex, albums, backgroundKillNotice, newMusicFound, loadingLibrary, libraryHydrating, resumePrompt, classicMode, miniPlayerHidden } =
     usePlayerState();
-  const { dismissBackgroundKillNotice, initializeLibrary, dismissNewMusicFound, pickNativeFolder } = usePlayerActions();
+  const { dismissBackgroundKillNotice, initializeLibrary, dismissNewMusicFound, pickNativeFolder, checkForNewMusic } = usePlayerActions();
   // null while checking (avoids a flash of the wrong screen), then true
   // only on a fresh install/reinstall where "All files access" hasn't
   // been granted yet — see WelcomeOnboarding.jsx for why this can't just
@@ -72,6 +78,17 @@ function Shell() {
   // shortcut...) so the playlist's Back button returns you there instead
   // of always dropping you back on Studio.
   const [playlistOrigin, setPlaylistOrigin] = useState("library");
+  // The URL of a link shared in from YouTube/Instagram, held only for as
+  // long as the quality picker is up. Nothing is fetched until a quality
+  // is chosen — a share is a request to be asked, not to start a download.
+  const [sharedUrl, setSharedUrl] = useState(null);
+  // In-flight and recently-finished downloads, newest first. Finished
+  // and failed rows stay until dismissed; a success is also cleared
+  // automatically once the library has been told to look again.
+  const [downloads, setDownloads] = useState([]);
+  // Metadata for a shared Spotify link, resolved while the sheet is up
+  // so the user can see which track uPod is about to go looking for.
+  const [spotify, setSpotify] = useState({ resolving: false, track: null, error: null });
 
   // Hardware/gesture back button: without this, @capacitor/app's default
   // behavior (no web history to fall back on, since this is a plain state
@@ -110,6 +127,96 @@ function Shell() {
       handle?.remove();
     };
   }, []);
+
+  // Share > uPod from any app. Covers both the cold start (uPod launched
+  // by the share) and a share arriving while uPod is already open — see
+  // utils/shareTarget.js for how those two paths are unified.
+  useEffect(() => onSharedUrl(setSharedUrl), []);
+
+  // Unpack the bundled yt-dlp/ffmpeg while the picker is up, so the
+  // first-ever download doesn't appear to hang through it.
+  useEffect(() => {
+    if (sharedUrl) prepareEngine();
+  }, [sharedUrl]);
+
+  // A Spotify link carries no audio uPod can take (see spotify.js), so
+  // the sheet resolves the track's details up front and the download
+  // becomes a search for the same recording on YouTube.
+  useEffect(() => {
+    if (!sharedUrl || !isSpotifyUrl(sharedUrl)) {
+      setSpotify({ resolving: false, track: null, error: null });
+      return;
+    }
+    let live = true;
+    setSpotify({ resolving: true, track: null, error: null });
+    resolveSpotifyTrack(sharedUrl)
+      .then((track) => live && setSpotify({ resolving: false, track, error: null }))
+      .catch((err) =>
+        live && setSpotify({ resolving: false, track: null, error: err?.message || "Couldn't read that Spotify link." }),
+      );
+    return () => {
+      live = false;
+    };
+  }, [sharedUrl]);
+
+  const patchDownload = (id, patch) =>
+    setDownloads((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+
+  const downloadHandlers = {
+    onProgress: (ev) => patchDownload(ev.id, { percent: ev.percent, etaSeconds: ev.etaSeconds }),
+    onDone: (ev) => {
+      patchDownload(ev.id, { status: "done", percent: 100 });
+      // Reuses the folder re-walk that already notices files added over
+      // USB, so the new track surfaces through the same "found new
+      // files" banner instead of a second, parallel mechanism.
+      checkForNewMusic();
+    },
+    onFailed: (ev) => patchDownload(ev.id, { status: "failed", message: ev.message }),
+  };
+
+  async function startDownload(url, preset, track) {
+    // A resolved Spotify track names itself; anything else is named by
+    // source and quality until yt-dlp reports a real title. Either is
+    // enough to tell two concurrent downloads apart, which a bare
+    // "Downloading…" would not be.
+    const label = track ? `${track.artist} · ${track.title}` : `${describeSource(url)} · ${preset.label}`;
+    const id = newDownloadId();
+    // On screen before the job is queued — see newDownloadId().
+    setDownloads((prev) => [
+      { id, label, status: track ? "searching" : "running", percent: null, etaSeconds: null },
+      ...prev,
+    ]);
+
+    try {
+      let target = url;
+      let outputName;
+
+      if (track) {
+        // Spotify's own audio is DRM'd, so the download is really a
+        // hunt for the same recording on YouTube. The duration gate
+        // lives in pickBestMatch — better to say nothing was found than
+        // to quietly hand over a live version or an hour-long loop.
+        const candidates = await searchYouTube(`${track.artist} ${track.title}`, 5);
+        const best = pickBestMatch(candidates, track);
+        if (!best) {
+          patchDownload(id, {
+            status: "failed",
+            message: "No close enough match on YouTube — nothing within a few seconds of the Spotify version.",
+          });
+          return;
+        }
+        target = `https://www.youtube.com/watch?v=${best.id}`;
+        outputName = `${track.artist} - ${track.title}`;
+        patchDownload(id, { status: "running" });
+      }
+
+      await downloadAudio(id, target, preset, downloadHandlers, { outputName });
+    } catch (err) {
+      patchDownload(id, { status: "failed", message: err?.message || "Couldn't start the download." });
+    }
+  }
+
+  const dismissDownload = (id) => setDownloads((prev) => prev.filter((d) => d.id !== id));
 
   // One-time check on mount — PlayerContext's own launch effect already
   // bails out silently if storage permission isn't granted (see
@@ -322,12 +429,37 @@ function Shell() {
             {screen === "settings" && <Settings onOpenReviewTracks={() => setScreen("reviewtracks")} />}
             {screen === "reviewtracks" && <ReviewTracks onBack={() => setScreen("settings")} />}
           </div>
+          {/* Above the mini player, below the scrolling content. It is a
+              normal-flow sibling of .content rather than an overlay, so
+              it has to sit ahead of MiniPlayer here — after it, the
+              strip lands below the fold and is never seen. */}
+          {/* Offset mirrors MiniPlayer's own render condition (see its
+              early return) so the strip sits on the mini player when
+              there is one and drops to the screen edge when there isn't. */}
+          <DownloadDock
+            downloads={downloads}
+            onDismiss={dismissDownload}
+            aboveMiniPlayer={screen !== "nowplaying" && !!queue[queueIndex] && !resumePrompt && !miniPlayerHidden}
+          />
           {screen !== "nowplaying" && <MiniPlayer onOpen={() => setScreen("nowplaying")} />}
           {/* Both sit at Shell level on purpose: the undo has to outlive
               the screen that did the deleting, and the resume prompt can
               land on whatever screen the app happened to be left on. */}
           <UndoSnackbar />
           {resumePrompt && <ResumePromptModal prompt={resumePrompt} />}
+          {sharedUrl && (
+            <DownloadAudioModal
+              url={sharedUrl}
+              resolved={spotify.track}
+              resolving={spotify.resolving}
+              resolveError={spotify.error}
+              onPick={(preset) => {
+                startDownload(sharedUrl, preset, spotify.track);
+                setSharedUrl(null);
+              }}
+              onClose={() => setSharedUrl(null)}
+            />
+          )}
         </div>
       </div>
     </div>

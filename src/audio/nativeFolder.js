@@ -42,6 +42,9 @@ function mimeForExt(ext) {
       return "audio/mp4";
     case "ogg":
       return "audio/ogg";
+    // Ogg Opus — what a "Best available" download off YouTube lands as.
+    case "opus":
+      return "audio/ogg";
     default:
       return "application/octet-stream";
   }

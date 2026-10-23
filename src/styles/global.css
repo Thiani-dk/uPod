@@ -168,6 +168,7 @@ html, body, #root { height: 100%; margin: 0; }
   border-top: 1px solid color-mix(in srgb, var(--accent) 14%, var(--sidebar-border-solid));
   margin-top: auto;
   padding-top: 12px;
+  gap: 10px;
 }
 .upod-root.native-platform .theme-toggle {
   background: color-mix(in srgb, var(--accent) 10%, var(--sidebar-solid));
@@ -251,7 +252,7 @@ html, body, #root { height: 100%; margin: 0; }
 .nav-playlist-item.add { color: var(--text-dim); }
 .nav-playlist-item .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .pl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-footer { margin-top: auto; padding-top: 10px; }
+.sidebar-footer { margin-top: auto; padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .theme-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 10px; border-radius: 10px; border: var(--glass-border-top); background: var(--panel); color: var(--text); font-size: 12px; cursor: pointer; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 .topbar { display: flex; align-items: center; gap: 8px; padding: 14px 20px; backdrop-filter: blur(var(--blur)); -webkit-backdrop-filter: blur(var(--blur)); }
@@ -2016,6 +2017,62 @@ html, body, #root { height: 100%; margin: 0; }
 }
 
 /* ============================================================
+   Share-sheet download picker (DownloadAudioModal.jsx). A wider
+   sheet than track-actions, and rows that are two lines rather
+   than one: each quality needs a sentence saying what it really
+   gets you, since the headline numbers alone mislead (a 320 kbps
+   MP3 off a 128 kbps source is bigger, not better).
+   ============================================================ */
+.quality-sheet { max-width: 400px; }
+
+/* Five two-line rows is taller than a short phone, and the mini
+   player sits over the bottom of the screen — so the list scrolls
+   inside the sheet rather than the last option being clipped off
+   under it with nothing to say it's there. */
+.quality-sheet .track-actions-list {
+  max-height: min(58vh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.quality-row {
+  /* Two-line body — the icon sits with the label, not centred
+     against the whole block. */
+  align-items: flex-start;
+  gap: 12px;
+}
+.quality-row svg { margin-top: 2px; }
+
+.quality-row-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+.quality-row-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.quality-row-chip {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+.quality-row-sub {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  white-space: normal;
+}
+
+/* ============================================================
    The 5 remaining transport button packs (Retro, Minimalistic,
    Stock, W10, Futuristic) — this content existed in
    new-button-packs.css but was never actually appended to
@@ -2520,3 +2577,370 @@ html, body, #root { height: 100%; margin: 0; }
   font-size: 12px;
 }
 .bulk-action-count { flex: 1; min-width: 0; font-weight: 600; }
+
+/* ============================================================
+   Share-to-uPod: the quality sheet (DownloadAudioModal.jsx)
+   and the download dock (DownloadDock.jsx).
+
+   Both float over arbitrary content, so neither uses --panel or
+   --panel-strong: those are translucent (0.055 / 0.09 in
+   obsidian) and let artwork read straight through the text.
+   They sit on --sidebar-solid instead, which is a real opaque
+   surface defined in both themes — the same call, and the same
+   tokens, as .modal-sheet-solid above.
+   ============================================================ */
+
+/* ---------- the quality sheet ---------- */
+
+/* .modal-overlay centres its child and pads 20px all round, which
+   leaves this floating mid-screen with rounded top corners and no
+   edge to sit on. A sheet wants the bottom of the window. */
+.dl-overlay {
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0;
+}
+
+.dl-sheet {
+  width: min(520px, 100%);
+  border-radius: 24px 24px 0 0;
+  background: color-mix(in srgb, var(--accent) 5%, var(--sidebar-solid));
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--sidebar-border-solid));
+  border-bottom: none;
+  box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.42);
+  padding: 10px 0 max(14px, env(safe-area-inset-bottom));
+  animation: dl-sheet-rise 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  display: flex;
+  flex-direction: column;
+  max-height: 86vh;
+}
+
+@keyframes dl-sheet-rise {
+  from { transform: translateY(14%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.dl-grabber {
+  width: 38px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+  margin: 0 auto 14px;
+  flex-shrink: 0;
+}
+
+.dl-head {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 0 16px 14px;
+  flex-shrink: 0;
+}
+
+.dl-art {
+  width: 54px;
+  height: 54px;
+  border-radius: 13px;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-shadow: 0 5px 16px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.dl-art-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* No cover art yet (a YouTube link, or Spotify still resolving) —
+   an accent tile rather than an empty hole. */
+.dl-art-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(155deg, var(--accent), color-mix(in srgb, var(--accent) 45%, #000));
+}
+
+.dl-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+
+.dl-source-chip {
+  align-self: flex-start;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.dl-title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+  /* Two lines before truncating: a song title cut to "Never Gonn…"
+     is not enough to confirm uPod found the right track. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.dl-title-muted {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.dl-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl-spin { animation: dl-rotate 1s linear infinite; }
+@keyframes dl-rotate { to { transform: rotate(360deg); } }
+
+.dl-close {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+.dl-close:active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+.dl-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 16px 12px;
+  padding: 9px 11px;
+  border-radius: 11px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text);
+  background: color-mix(in srgb, #ffb020 14%, transparent);
+  border: 1px solid color-mix(in srgb, #ffb020 38%, transparent);
+}
+.dl-notice svg { color: #ffb020; flex-shrink: 0; margin-top: 1px; }
+
+.dl-list {
+  padding: 0 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dl-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 10px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.dl-row:active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+.dl-row-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.dl-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dl-row-label { display: flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 600; }
+.dl-row-sub { font-size: 11px; line-height: 1.45; color: var(--text-dim); }
+
+.dl-chip {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+/* Confirmation affordance: invisible until the row is pressed, so
+   the list stays calm but a tap still acknowledges itself. */
+.dl-row-go {
+  margin-top: 5px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--accent);
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+.dl-row:active .dl-row-go { opacity: 1; transform: scale(1); }
+
+/* ---------- the download dock ---------- */
+
+.dl-dock {
+  /* An overlay, not a flow sibling: .content is flex:1 and the mini
+     player is position:absolute at z-index 15, so anything left in
+     normal flow here is painted underneath it and never seen. */
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 16;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.dl-dock > * { pointer-events: auto; }
+
+/* Clears the 58px mini player plus its 12px inset. */
+.dl-dock.above-mini-player { bottom: 82px; }
+
+.dl-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--sidebar-solid));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--sidebar-border-solid));
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.34);
+  animation: dl-card-in 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes dl-card-in {
+  from { transform: translateY(10px) scale(0.97); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.dl-card.is-failed { border-color: color-mix(in srgb, #ff6b6b 46%, var(--sidebar-border-solid)); }
+
+.dl-card-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dl-card-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dl-card-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+.dl-card.is-failed .dl-card-sub { color: color-mix(in srgb, #ff6b6b 70%, var(--text)); }
+
+.dl-card-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+.dl-card-close:active { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+/* ---------- the spinning disc ---------- */
+
+.dock-disc { position: relative; width: 44px; height: 44px; flex-shrink: 0; }
+
+.dock-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+.dock-ring-track {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 13%, transparent);
+  stroke-width: 3;
+}
+.dock-ring-fill {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dasharray 200ms linear;
+}
+/* Unknown total size: the arc orbits instead of sitting at zero. */
+.dock-ring-fill.is-indeterminate {
+  transition: none;
+  transform-origin: 50% 50%;
+  animation: dl-rotate 1.1s linear infinite;
+}
+
+/* The record itself. It turns only while something is happening —
+   a finished or failed card is still, which is most of how the
+   settled states read as settled. */
+.dock-disc-face {
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  background:
+    repeating-radial-gradient(circle at 50% 50%,
+      color-mix(in srgb, var(--text) 9%, transparent) 0 1px,
+      transparent 1px 3px),
+    color-mix(in srgb, var(--accent) 16%, var(--sidebar-solid));
+}
+.dock-disc-running .dock-disc-face,
+.dock-disc-searching .dock-disc-face { animation: dl-rotate 2.4s linear infinite; }
+
+.dock-disc-hole {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+.dock-disc-done .dock-disc-face { color: var(--accent); }
+.dock-disc-failed .dock-disc-face { color: #ff6b6b; }
+.dl-card.is-failed .dock-ring-fill { stroke: #ff6b6b; }
+
+/* Spinning artwork and sweeping arcs are exactly what this setting
+   is for — the states stay distinguishable without the motion. */
+@media (prefers-reduced-motion: reduce) {
+  .dl-sheet,
+  .dl-card { animation: none; }
+  .dock-disc-face,
+  .dock-ring-fill.is-indeterminate,
+  .dl-spin { animation: none; }
+  .dock-ring-fill.is-indeterminate { stroke-dasharray: 113 113 !important; opacity: 0.5; }
+}
