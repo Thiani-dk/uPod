@@ -12,6 +12,7 @@ import {
   fingerprintNativeFolder,
   readNativeTrackObjectUrl,
   deleteNativeTrack,
+  nativeTrackExists,
   ensureStoragePermission,
   getMusicFolderPath,
   hasConfirmedFolderOnce,
@@ -36,7 +37,12 @@ import {
   clearTrackMetadata as removePersistedTrackMetadata,
   loadTrustBaseline,
   saveTrustBaseline,
+  loadUnplayableIds,
+  markUnplayable as persistUnplayable,
+  clearUnplayableMarkers,
+  forgetTracks,
 } from "../audio/libraryCache";
+import { startLyricsSweep, cancelLyricsSweep } from "../online/lyricsPrefetch";
 import { fetchCoverArt } from "../online/coverArt";
 import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
 import { renderStudioEffect as renderEffectOffline } from "../audio/studioEffects";
@@ -88,6 +94,12 @@ const SELF_COLLISION_GUARD_MS = 4000;
 // app paused hands the token back promptly.
 const FOCUS_RELEASE_DELAY_MS = 5000;
 
+// How long after the library is on screen before the background lyrics
+// sweep starts. Long enough for the launch to be completely over — the
+// first paint, cover decoding, and the silent folder walk — since nothing
+// about pre-fetching lyrics is urgent and everything about a launch is.
+const LYRICS_SWEEP_START_DELAY_MS = 6000;
+
 export const FAVORITES_PLAYLIST_ID = "pl-favorites";
 export const SPEED_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5];
 
@@ -123,6 +135,12 @@ export const PLAYLIST_UNDO_MS = 6000;
 // back is "you were away", not "you checked a notification" — long
 // enough that silently resuming would be startling, so uPod asks first.
 export const RESUME_PROMPT_AFTER_MS = 30 * 60 * 1000;
+
+// Minimum gap between folder re-walks triggered by coming back to the
+// foreground. Long enough that flicking between apps doesn't re-walk the
+// folder every few seconds, short enough that a deletion made in a file
+// manager is reflected by the time the user is looking at uPod again.
+const RESUME_FOLDER_RECHECK_MS = 60 * 1000;
 
 const initialState = {
   library: [],
@@ -217,6 +235,16 @@ const initialState = {
   // "Check for new music" button can show progress. The launch-time check
   // runs silently and never sets this.
   checkingForNewMusic: false,
+  // Track ids whose file is present but undecodable (see UNPLAYABLE_STORE
+  // in libraryCache). Loaded once on launch and used to filter the
+  // library at LOAD_LIBRARY time, so a file that has already proved it
+  // can't be played never appears in a list to be tapped again. A Set,
+  // empty until it's been loaded.
+  unplayableIds: new Set(),
+  // { total, found, pending, done, running } for the background lyrics
+  // sweep (see online/lyricsPrefetch.js), or null before it has reported
+  // anything. Purely informational — Settings renders it.
+  lyricsSweep: null,
 };
 
 function shuffleArray(arr) {
@@ -238,6 +266,36 @@ function shuffleArray(arr) {
 // user's own data silently disappears on every rescan.
 function applyTrackMetadata(tracks, trackMetadata, trustBaseline) {
   return tracks.map((t) => applyStoredMetadata(t, trackMetadata?.[t.id], trustBaseline));
+}
+
+// Takes a set of track ids out of everywhere the user can see or reach
+// them — the library, the albums derived from it, every playlist, and the
+// live queue (keeping the current track selected where it survives, or
+// landing on the next one where it doesn't). DELETE_TRACK and
+// PRUNE_TRACKS are the same operation over one id and many; the only
+// difference between them is what caused it.
+function withoutTracks(state, idSet) {
+  if (idSet.size === 0) return state;
+  const library = state.library.filter((t) => !idSet.has(t.id));
+  if (library.length === state.library.length) return state;
+  const playlists = state.playlists.map((p) =>
+    p.trackIds.some((id) => idSet.has(id)) ? { ...p, trackIds: p.trackIds.filter((id) => !idSet.has(id)) } : p
+  );
+  const wasCurrent = idSet.has(state.queue[state.queueIndex]?.id);
+  const removedBeforeCurrent = state.queue.slice(0, state.queueIndex).filter((t) => idSet.has(t.id)).length;
+  const queue = state.queue.filter((t) => !idSet.has(t.id));
+  let queueIndex = state.queueIndex - removedBeforeCurrent;
+  if (queueIndex >= queue.length) queueIndex = Math.max(0, queue.length - 1);
+  return {
+    ...state,
+    library,
+    albums: groupIntoAlbums(library),
+    playlists,
+    queue,
+    queueIndex,
+    playing: queue.length === 0 ? false : state.playing,
+    currentTime: wasCurrent ? 0 : state.currentTime,
+  };
 }
 
 function applyCoverOverrides(tracks, overrides) {
@@ -262,8 +320,17 @@ function reducer(state, action) {
       // Freshly-scanned or cache-hydrated tracks always carry their
       // embedded cover — reapply any user overrides on top so a rescan or
       // a later launch doesn't silently drop back to the embedded art.
+      //
+      // Files already known to be undecodable are dropped here, which is
+      // the earliest point they could be: this is the only way into
+      // state.library, so filtering here means nothing downstream — the
+      // Tracks tab, albums, playlists, a restored queue, Instant Mix —
+      // has to know the concept exists.
+      const playable = state.unplayableIds.size
+        ? action.tracks.filter((t) => !state.unplayableIds.has(t.id))
+        : action.tracks;
       const library = applyCoverOverrides(
-        applyTrackMetadata(action.tracks, state.trackMetadata, state.trustBaseline),
+        applyTrackMetadata(playable, state.trackMetadata, state.trustBaseline),
         state.coverOverrides
       );
       const albums = groupIntoAlbums(library);
@@ -682,31 +749,27 @@ function reducer(state, action) {
     // has no tracks left), every playlist's trackIds (Favourites
     // included), and the queue (adjusting queueIndex for whatever was
     // removed ahead of it, same idea as REMOVE_QUEUE_ITEM).
-    case "DELETE_TRACK": {
-      const { trackId } = action;
-      const library = state.library.filter((t) => t.id !== trackId);
-      const albums = groupIntoAlbums(library);
-      const playlists = state.playlists.map((p) =>
-        p.trackIds.includes(trackId) ? { ...p, trackIds: p.trackIds.filter((id) => id !== trackId) } : p
-      );
-      const wasCurrent = state.queue[state.queueIndex]?.id === trackId;
-      const removedBeforeCurrent = state.queue
-        .slice(0, state.queueIndex)
-        .filter((t) => t.id === trackId).length;
-      const queue = state.queue.filter((t) => t.id !== trackId);
-      let queueIndex = state.queueIndex - removedBeforeCurrent;
-      if (queueIndex >= queue.length) queueIndex = Math.max(0, queue.length - 1);
-      return {
-        ...state,
-        library,
-        albums,
-        playlists,
-        queue,
-        queueIndex,
-        playing: queue.length === 0 ? false : state.playing,
-        currentTime: wasCurrent ? 0 : state.currentTime,
-      };
+    case "DELETE_TRACK":
+      return withoutTracks(state, new Set([action.trackId]));
+    // Files that are no longer on disk, or that have proved undecodable.
+    // Same removal as a deliberate delete — the user's mental model is
+    // just "it's not there any more", and a row that plays nothing is
+    // worse than no row.
+    case "PRUNE_TRACKS":
+      return withoutTracks(state, new Set(action.trackIds));
+    case "SET_UNPLAYABLE_IDS":
+      return { ...state, unplayableIds: action.ids };
+    case "MARK_UNPLAYABLE": {
+      const ids = new Set(state.unplayableIds);
+      ids.add(action.trackId);
+      return withoutTracks({ ...state, unplayableIds: ids }, new Set([action.trackId]));
     }
+    // An explicit full rescan gives every file another chance — see
+    // clearUnplayableMarkers.
+    case "CLEAR_UNPLAYABLE":
+      return { ...state, unplayableIds: new Set() };
+    case "SET_LYRICS_SWEEP":
+      return { ...state, lyricsSweep: action.sweep };
     // A decision made on the "Possibly not music" review screen (see
     // actions.reviewTrack) — "confirmed" makes it a normal library track,
     // "excluded" hides it the same way a hard-filtered voice note is
@@ -790,6 +853,10 @@ export function PlayerProvider({ children }) {
   // "possibly not music" tracks the user already confirmed or excluded.
   const libraryRef = useRef([]);
   libraryRef.current = state.library;
+  // Same reason: the stable callbacks that re-save the library cache need
+  // the current folder, and can't take it as a dependency.
+  const selectedFolderRef = useRef(null);
+  selectedFolderRef.current = state.selectedFolderName;
   // Always-current copy of the pending "new music" result, so
   // dismissNewMusicFound (a stable useCallback) can read the fingerprint
   // it needs to record without taking state.newMusicFound as a dependency.
@@ -893,6 +960,109 @@ export function PlayerProvider({ children }) {
     return promise;
   }, []);
 
+  // Files already dealt with this session, so the two ways a bad file
+  // announces itself (a read that returns nothing, and an <audio> error a
+  // moment later) don't both act on it.
+  const handledBadFilesRef = useRef(new Set());
+  // Consecutive bad files, to stop a library of broken downloads from
+  // auto-advancing through itself at speed. Reset by the first track that
+  // actually loads.
+  const badFileRunRef = useRef(0);
+
+  // What happens when a track can't be played. There are two genuinely
+  // different cases behind one symptom, and conflating them is why bad
+  // files used to stay in the library forever:
+  //
+  //   - the file is gone (deleted or moved outside the app, between the
+  //     last folder walk and now). The track is dropped, exactly as if it
+  //     had been deleted from inside uPod.
+  //   - the file is there but won't decode: a truncated download, a
+  //     mislabelled container, a 0-byte stub. The track is dropped too,
+  //     and the id is marked so hydration leaves it out on every future
+  //     launch as well. An explicit rescan clears those marks.
+  //
+  // Either way the removal shifts the queue up, so the next track lands
+  // at the current index and the queue-change effect starts it — the user
+  // sees playback carry on, with one toast explaining what left.
+  const handleUnplayableTrack = useCallback(async (track, reason) => {
+    if (!track || handledBadFilesRef.current.has(track.id)) return;
+    handledBadFilesRef.current.add(track.id);
+
+    // Drop the cached (failed) read so a track that comes back — a rescan
+    // after re-downloading it — isn't served the same null from memory.
+    trackUrlCacheRef.current.delete(track.id);
+
+    const isNative = track.native !== false && Boolean(track.folderPath && track.relativePath);
+    const gone = isNative ? !(await nativeTrackExists(track)) : false;
+
+    if (gone) {
+      dispatch({ type: "PRUNE_TRACKS", trackIds: [track.id] });
+      forgetTracks([track.id]).catch(() => {});
+      dispatch({
+        type: "SET_QUEUE_TOAST",
+        message: `"${track.title}" isn't on this device any more — removed from your library.`,
+      });
+    } else {
+      await persistUnplayable(track.id, {
+        reason,
+        relativePath: track.relativePath,
+        size: track.size,
+      });
+      dispatch({ type: "MARK_UNPLAYABLE", trackId: track.id });
+      dispatch({
+        type: "SET_QUEUE_TOAST",
+        message: `"${track.title}" can't be played — the file is damaged or an unsupported format. Removed from your library.`,
+      });
+    }
+
+    const remaining = libraryRef.current.filter((t) => t.id !== track.id);
+    saveCachedLibrary({ tracks: remaining, folderPath: selectedFolderRef.current }).catch((err) => {
+      console.warn("Couldn't persist library after dropping an unplayable track:", err);
+    });
+
+    // A whole folder of broken files shouldn't become a silent sprint
+    // through the queue. After a handful in a row, stop and let the
+    // toast stand.
+    badFileRunRef.current += 1;
+    if (badFileRunRef.current >= 5) {
+      badFileRunRef.current = 0;
+      dispatch({ type: "SET_PLAYING", playing: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Covers already handed to the decoder, so a queue change doesn't
+  // re-decode the same three images every time it fires.
+  const decodedCoversRef = useRef(new Set());
+
+  // Decodes a cover off the critical path. An <img> whose src is a blob
+  // URL still has to be decoded before it can be painted, and that decode
+  // happens during the first frame that tries to show it — the gap being
+  // what reads as "the art hasn't loaded yet" on a track change. Doing it
+  // in advance means the bitmap is already in the decoded-image cache
+  // when the element mounts, so the paint is immediate. Failures are
+  // ignored: this is a warm-up, and the real <img> will report any
+  // genuine problem itself.
+  const warmCoverDecode = useCallback((coverUrl) => {
+    if (!coverUrl || decodedCoversRef.current.has(coverUrl)) return;
+    decodedCoversRef.current.add(coverUrl);
+    const img = new Image();
+    img.src = coverUrl;
+    img.decode?.().catch(() => {});
+  }, []);
+
+  // Same idea for the accent: extractCoverAppearance is canvas work that
+  // the accent effect only starts once the track is already current, so
+  // the first moment of every new track was painted with the previous
+  // track's colour. Pre-filling the cache for the neighbours means the
+  // accent effect finds a hit and dispatches synchronously instead.
+  const warmAccent = useCallback((track) => {
+    if (!track || accentCacheRef.current.has(track.id)) return;
+    extractCoverAppearance(track.cover).then((appearance) => {
+      accentCacheRef.current.set(track.id, appearance);
+    });
+  }, []);
+
   function flushListen() {
     const l = listenRef.current;
     if (l.trackId && l.pendingSeconds > 0) {
@@ -946,10 +1116,9 @@ export function PlayerProvider({ children }) {
     getTrackObjectUrl(currentTrack).then((url) => {
       if (token !== loadTokenRef.current) return; // superseded by a later track change
       if (!url) {
-        dispatch({
-          type: "SET_QUEUE_TOAST",
-          message: `Couldn't play "${currentTrack.title}" — the file may be missing or unreadable.`,
-        });
+        // The read itself failed — the file is missing, or unreadable
+        // where it sits. Either way it doesn't belong in the library.
+        handleUnplayableTrack(currentTrack, "unreadable");
         return;
       }
       audio.src = url;
@@ -965,18 +1134,39 @@ export function PlayerProvider({ children }) {
     const track = state.queue[state.queueIndex];
     if (!track) return;
 
-    // Prefetch the next couple of tracks so a native track's lazy
+    // Prefetch the neighbouring tracks so a native track's lazy
     // full-file read (a native-bridge round trip) has already finished by
     // the time playback reaches it, similar in spirit to gapless preload.
-    for (let ahead = 1; ahead <= 2; ahead++) {
-      const upcoming = state.queue[state.queueIndex + ahead];
-      if (upcoming) getTrackObjectUrl(upcoming);
+    // The previous track is prefetched too, not just the next ones:
+    // stepping back used to always hit a cold read, which is why going
+    // backwards through a queue felt slower than going forwards.
+    const neighbours = [
+      state.queue[state.queueIndex + 1],
+      state.queue[state.queueIndex + 2],
+      state.queue[state.queueIndex - 1],
+    ].filter(Boolean);
+    for (const upcoming of neighbours) getTrackObjectUrl(upcoming);
+
+    // Warm the *visual* side of a track change as well. Both of these are
+    // per-cover work that otherwise happens for the first time at the
+    // moment the new screen is painted, which is what the "cover art
+    // hasn't loaded yet" flash while flipping through a queue actually
+    // was: an undecoded image and an unanalysed palette, both of them
+    // predictable one track in advance.
+    for (const neighbour of [track, ...neighbours]) {
+      warmCoverDecode(neighbour.cover);
+      warmAccent(neighbour);
     }
 
     // Bound memory: revoke blob URLs for anything outside the current
-    // track + the two prefetched ahead of it.
+    // track and its prefetched neighbours.
     const keepIds = new Set(
-      [track.id, state.queue[state.queueIndex + 1]?.id, state.queue[state.queueIndex + 2]?.id].filter(Boolean)
+      [
+        track.id,
+        state.queue[state.queueIndex + 1]?.id,
+        state.queue[state.queueIndex + 2]?.id,
+        state.queue[state.queueIndex - 1]?.id,
+      ].filter(Boolean)
     );
     for (const [id, urlPromise] of trackUrlCacheRef.current) {
       if (!keepIds.has(id)) {
@@ -1036,6 +1226,8 @@ export function PlayerProvider({ children }) {
       }
     };
     const onLoaded = () => {
+      // Something decoded, so whatever run of bad files preceded it is over.
+      badFileRunRef.current = 0;
       dispatch({ type: "SET_DURATION", duration: audio.duration || 0 });
       if (pendingSeekRef.current != null) {
         audio.currentTime = pendingSeekRef.current;
@@ -1054,6 +1246,18 @@ export function PlayerProvider({ children }) {
     const onPause = () => dispatch({ type: "SET_PLAYING", playing: false });
     const onError = () => {
       const track = state.queue[state.queueIndex];
+      // MEDIA_ERR_DECODE (3) and MEDIA_ERR_SRC_NOT_SUPPORTED (4) are the
+      // element saying the bytes themselves are not playable audio —
+      // that's a verdict on the file and the track comes out of the
+      // library. An ABORTED or NETWORK error is a verdict on this
+      // attempt (a torn-down src, a blob URL revoked under us), so it
+      // only gets a toast; marking a good file on one of those would hide
+      // it permanently for no reason.
+      const code = audio.error?.code;
+      if (track && (code === 3 || code === 4)) {
+        handleUnplayableTrack(track, code === 3 ? "undecodable" : "unsupported");
+        return;
+      }
       dispatch({ type: "SET_PLAYING", playing: false });
       dispatch({
         type: "SET_QUEUE_TOAST",
@@ -1273,6 +1477,12 @@ export function PlayerProvider({ children }) {
   const pickNativeFolder = useCallback(async () => {
     dispatch({ type: "LOADING_LIBRARY" });
     markFolderConfirmedOnce();
+    // A full rescan is the user explicitly asking uPod to look again, so
+    // files previously judged undecodable get another chance — the usual
+    // reason to rescan after one of those toasts is having re-downloaded
+    // the file. If it's still broken, playing it will mark it again.
+    await clearUnplayableMarkers().catch(() => {});
+    dispatch({ type: "CLEAR_UNPLAYABLE" });
     try {
       const { tracks, folderPath, fingerprint } = await scanNativeFolder((done, total) =>
         dispatch({ type: "LIBRARY_SCAN_PROGRESS", done, total })
@@ -1315,8 +1525,48 @@ export function PlayerProvider({ children }) {
     if (!Capacitor.isNativePlatform()) return null;
     if (!silent) dispatch({ type: "CHECKING_FOR_NEW_MUSIC" });
     try {
-      const cached = await loadLibraryFingerprint();
-      const current = await fingerprintNativeFolder();
+      const [cached, current] = await Promise.all([loadLibraryFingerprint(), fingerprintNativeFolder()]);
+
+      // Files the library still lists that aren't on disk any more —
+      // deleted or moved from a file manager, over USB, by another app.
+      // These are removed outright rather than reported: a prompt asking
+      // the user to confirm that something they already deleted is gone
+      // isn't a decision, and until they rescanned, the dead rows stayed
+      // in the Tracks tab and in playlists, playing nothing when tapped.
+      // The full tag-parsing rescan is still only ever explicit; this
+      // costs nothing extra because the walk has already been done.
+      const onDisk = new Set(current.paths || []);
+      // Only prune against the folder the library was actually built
+      // from. If the configured path has been changed but not yet
+      // rescanned, every track is "missing" from the new folder — which
+      // is a reason to rescan, not to empty the library.
+      const sameFolder = !selectedFolderRef.current || current.folderPath === selectedFolderRef.current;
+      // A walk that came back completely empty against a library that
+      // isn't is far more likely to be storage that hasn't mounted yet
+      // than a user who deleted everything, and the cost of being wrong
+      // in that direction is the whole library disappearing. An unreadable
+      // folder throws rather than returning nothing, so this only guards
+      // the genuinely ambiguous case.
+      const suspiciouslyEmpty = onDisk.size === 0 && libraryRef.current.length > 0;
+      const missing =
+        sameFolder && !suspiciouslyEmpty
+          ? libraryRef.current.filter(
+              (t) => t.native !== false && t.relativePath && !onDisk.has(t.relativePath)
+            )
+          : [];
+      if (missing.length > 0) {
+        const missingIds = missing.map((t) => t.id);
+        const missingIdSet = new Set(missingIds);
+        dispatch({ type: "PRUNE_TRACKS", trackIds: missingIds });
+        const remaining = libraryRef.current.filter((t) => !missingIdSet.has(t.id));
+        saveCachedLibrary({ tracks: remaining, folderPath: current.folderPath, fingerprint: current }).catch((err) => {
+          console.warn("Couldn't persist library after pruning missing files:", err);
+        });
+        // Their lyrics, metadata and marks go too — see forgetTracks.
+        forgetTracks(missingIds).catch(() => {});
+        console.log(`[upod] pruned ${missingIds.length} track(s) whose files are gone`);
+      }
+
       // No stored fingerprint means a cache written before this existed —
       // adopt the current one silently instead of claiming a change we
       // can't actually substantiate.
@@ -1325,17 +1575,30 @@ export function PlayerProvider({ children }) {
         if (!silent) dispatch({ type: "SET_NEW_MUSIC_FOUND", result: null });
         return null;
       }
-      const changed =
-        cached.fileCount !== current.fileCount ||
-        cached.newestMtime !== current.newestMtime ||
-        cached.totalSize !== current.totalSize;
-      const result = changed
-        ? {
-            added: Math.max(0, current.fileCount - cached.fileCount),
-            removed: Math.max(0, cached.fileCount - current.fileCount),
-            fingerprint: current,
-          }
-        : null;
+
+      // Additions are counted from the paths rather than inferred from a
+      // count difference, so one file added and one removed between
+      // launches no longer reads as "nothing changed" — and a pure
+      // deletion, now that it's been handled above, no longer prompts for
+      // a rescan that has nothing left to find.
+      const known = new Set(
+        libraryRef.current.filter((t) => t.relativePath).map((t) => t.relativePath)
+      );
+      const addedPaths = (current.paths || []).filter((path) => !known.has(path));
+
+      if (addedPaths.length === 0) {
+        // The library and the folder agree now (possibly because of the
+        // prune above), so adopt the walk's summary and say nothing.
+        await updateLibraryFingerprint(current);
+        dispatch({ type: "SET_NEW_MUSIC_FOUND", result: null });
+        return null;
+      }
+
+      const result = {
+        added: addedPaths.length,
+        removed: missing.length,
+        fingerprint: current,
+      };
       dispatch({ type: "SET_NEW_MUSIC_FOUND", result });
       return result;
     } catch (err) {
@@ -1442,39 +1705,49 @@ export function PlayerProvider({ children }) {
     // launch. See NotificationPermissionPlugin.java for why this exists.
     ensureNotificationPermission();
 
-    // Load persisted cover overrides before anything else touches
+    // Everything the launch needs out of IndexedDB, read at once rather
+    // than in a chain of six awaits. These are independent reads and each
+    // one opens its own connection, so sequencing them was costing the
+    // whole launch the sum of their latencies — and that sum is the gap
+    // the splash screen has to cover. The dispatch order below still
+    // matters and is unchanged; only the waiting is shared.
+    const [overrideRecords, trackMetadata, loadedBaseline, savedPlaylists, unplayableIds, cached] =
+      await Promise.all([
+        loadCoverOverrides(),
+        loadAllTrackMetadata(),
+        loadTrustBaseline(),
+        loadCachedPlaylists(),
+        loadUnplayableIds(),
+        loadCachedLibrary(),
+      ]);
+    let trustBaseline = loadedBaseline;
+
+    // Cover overrides must land before anything else touches
     // state.library — both the cache-hydration and the scan paths below
     // dispatch LOAD_LIBRARY, which reapplies whatever's in
     // state.coverOverrides, so this must land first or a user's chosen
     // cover would flash the embedded one on this launch.
-    const overrideRecords = await loadCoverOverrides();
     const overrides = {};
     for (const o of overrideRecords) {
       overrides[o.albumId] = coverObjectUrlFromBytes(o.coverBytes, o.coverFormat);
     }
     dispatch({ type: "SET_COVER_OVERRIDES", overrides });
 
-    // Must land before the cache-hydration branch below dispatches
-    // LOAD_LIBRARY, since that's what stamps every track's origin — if
-    // these arrived afterwards the library would render once as
-    // unidentified and then correct itself.
-    const trackMetadata = await loadAllTrackMetadata();
-    let trustBaseline = await loadTrustBaseline();
+    // Likewise before LOAD_LIBRARY: that's the dispatch that filters
+    // known-undecodable files out of the library, and it can only do so
+    // if it already knows which ones they are.
+    dispatch({ type: "SET_UNPLAYABLE_IDS", ids: unplayableIds });
 
     // Same idea for playlists (including Favourite Tunes) — they only
     // ever lived in React state before, so a full process kill (not just
-    // backgrounding) wiped them. Must also land before the cache-hydration
-    // early-return below, and playlistsHydratedRef must be set regardless
-    // of which branch that takes, so the persist effect further down
-    // knows it's safe to start saving instead of clobbering this with the
-    // still-default initialState.playlists.
-    const savedPlaylists = await loadCachedPlaylists();
+    // backgrounding) wiped them. playlistsHydratedRef must be set
+    // regardless of which branch runs below, so the persist effect further
+    // down knows it's safe to start saving instead of clobbering this with
+    // the still-default initialState.playlists.
     if (savedPlaylists && savedPlaylists.length > 0) {
       dispatch({ type: "SET_PLAYLISTS", playlists: savedPlaylists });
     }
     playlistsHydratedRef.current = true;
-
-    const cached = await loadCachedLibrary();
 
     // First launch after this feature shipped: everything already in the
     // library is grandfathered wholesale, so a stable library in daily use
@@ -1620,6 +1893,47 @@ export function PlayerProvider({ children }) {
     });
   }, [state.playlists]);
 
+  // Background lyrics coverage. Karaoke used to look lyrics up the first
+  // time you opened it for a track, which meant it only ever worked for
+  // tracks you'd already opened it on, and never offline for the rest.
+  // This walks the whole library instead, filling in anything missing a
+  // request at a time, so by the time Karaoke is opened the answer is
+  // usually already on the device.
+  //
+  // Deliberately late and lazy: it waits for hydration to finish and then
+  // some, so it's nowhere near the launch path, and it stops itself the
+  // moment the connection goes. Re-running it is cheap — it reads what's
+  // already cached in one pass and queues only what's missing — so it's
+  // safe to restart on a library change or on coming back online.
+  const libraryCount = state.library.length;
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (state.libraryHydrating || libraryCount === 0) return;
+
+    let disposed = false;
+    const run = () => {
+      if (disposed || navigator.onLine === false) return;
+      startLyricsSweep(libraryRef.current, {
+        onProgress: (sweep) => {
+          if (!disposed) dispatch({ type: "SET_LYRICS_SWEEP", sweep });
+        },
+      });
+    };
+
+    // Long enough that the first screen, its covers and the folder walk
+    // are all done with before any of this starts competing for the
+    // connection or the main thread.
+    const timer = setTimeout(run, LYRICS_SWEEP_START_DELAY_MS);
+    window.addEventListener("online", run);
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+      window.removeEventListener("online", run);
+      cancelLyricsSweep();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.libraryHydrating, libraryCount]);
+
   // Background-kill detection (see backgroundPlaybackWatchdog.js) —
   // checks whether the previous session looks like it was killed by the
   // OS mid-playback, then arms the watchdog for this session.
@@ -1664,6 +1978,27 @@ export function PlayerProvider({ children }) {
     }).then((h) => handles.push(h));
     return () => handles.forEach((h) => h.remove());
   }, []);
+
+  // Files can come and go while uPod is in the background — a file
+  // manager, a USB transfer, another app's cleanup. Coming back to the
+  // foreground re-walks the folder (the cheap, no-tag-parsing walk, ~0.5s
+  // for a 740-file library) so anything that disappeared while away is
+  // out of the library before the user taps it, rather than next launch.
+  // Throttled, because "resume" also fires for a glance at a
+  // notification, and silent, because this must never interrupt anything.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let handle;
+    let lastCheckedAt = Date.now();
+    CapacitorApp.addListener("resume", () => {
+      if (Date.now() - lastCheckedAt < RESUME_FOLDER_RECHECK_MS) return;
+      lastCheckedAt = Date.now();
+      checkForNewMusic({ silent: true });
+    }).then((h) => {
+      handle = h;
+    });
+    return () => handle?.remove();
+  }, [checkForNewMusic]);
 
   // Requests Android audio focus whenever playback starts, abandons it
   // when the user pauses — kept separate from the focus-change listener
@@ -1881,6 +2216,12 @@ export function PlayerProvider({ children }) {
     pickFolder,
     pickNativeFolder,
     checkForNewMusic,
+    // Manual trigger for the lyrics sweep (Settings). A no-op if one is
+    // already running — see startLyricsSweep.
+    runLyricsSweep: () =>
+      startLyricsSweep(libraryRef.current, {
+        onProgress: (sweep) => dispatch({ type: "SET_LYRICS_SWEEP", sweep }),
+      }),
     dismissNewMusicFound,
     setTrackMetadataRecord,
     clearTrackMetadataRecord,
@@ -1954,12 +2295,22 @@ export function PlayerProvider({ children }) {
       try {
         await deleteNativeTrack({ folderPath: track.folderPath, relativePath: track.relativePath });
       } catch (err) {
-        return {
-          ok: false,
-          error: err?.message || "The file may already be gone, or permission was denied.",
-        };
+        // "It's already gone" is not a failed delete — the user asked for
+        // the file not to be there and it isn't. Reporting an error here
+        // left the track in the library (and in playlists) with nothing
+        // behind it, which is the exact state this is meant to prevent.
+        // Anything else — a real permission denial — still fails loudly.
+        const alreadyGone = !(await nativeTrackExists(track));
+        if (!alreadyGone) {
+          return {
+            ok: false,
+            error: err?.message || "The file couldn't be deleted — permission may have been denied.",
+          };
+        }
       }
       dispatch({ type: "DELETE_TRACK", trackId: track.id });
+      // Lyrics, established metadata and any unplayable mark go with it.
+      forgetTracks([track.id]).catch(() => {});
       // Re-persist the library cache so the deleted track doesn't
       // reappear on next launch without a rescan — playlists persist on
       // their own via the effect that watches state.playlists.
@@ -2191,7 +2542,7 @@ export function PlayerProvider({ children }) {
     state.eqPreset, state.playlists, state.studioStatus, state.trackOrderStatus, state.queueToast,
     state.coverOverrides, state.backgroundKillNotice, state.newMusicFound, state.checkingForNewMusic,
     state.trackMetadata, state.trustBaseline, state.playlistUndo, state.resumePrompt,
-    state.miniPlayerHidden,
+    state.miniPlayerHidden, state.unplayableIds, state.lyricsSweep,
   ]);
 
   return (

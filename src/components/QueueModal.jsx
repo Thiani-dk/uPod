@@ -101,7 +101,7 @@ export default function QueueModal({ onClose }) {
                           style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover", flexShrink: 0 }}
                         />
                       ) : (
-                        <NoteMark size={18} style={{ color: "var(--accent)", flexShrink: 0 }} />
+                        <NoteMark size={18} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
                       )}
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
                         {track.title || "Untitled"}

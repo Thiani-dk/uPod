@@ -47,7 +47,7 @@ export default function ReviewTracks({ onBack }) {
             <div key={t.id} className="track-row-wrap track-row-thumb-wrap">
               <div className="track-row-play track-row-with-thumb" style={{ cursor: "default" }}>
                 <div className="track-row-thumb cover-glass">
-                  <NoteMark size={18} style={{ color: "var(--accent)" }} />
+                  <NoteMark size={18} style={{ color: "var(--accent-text)" }} />
                 </div>
                 <span className="track-row-text">
                   <span className="track-row-text-title">{t.title}</span>

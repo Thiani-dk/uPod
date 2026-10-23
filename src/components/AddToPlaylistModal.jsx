@@ -58,7 +58,7 @@ export default function AddToPlaylistModal({ track, tracks, onClose }) {
         <Icon size={16} />
         <span style={{ flex: 1 }}>{playlist.name}</span>
         {already ? (
-          <Check size={15} style={{ color: "var(--accent)" }} />
+          <Check size={15} style={{ color: "var(--accent-text)" }} />
         ) : (
           <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{playlist.trackIds.length}</span>
         )}

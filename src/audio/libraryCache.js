@@ -8,7 +8,7 @@
 import { coverObjectUrlFromBytes } from "./metadata";
 
 const DB_NAME = "upod-library";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const TRACKS_STORE = "tracks";
 const META_STORE = "meta";
 // User-chosen cover art, keyed by album id (same identity groupIntoAlbums
@@ -29,6 +29,31 @@ const LYRICS_STORE = "lyrics";
 // not a cache of something retrieved, and nothing else in the app stores
 // it — so dropping it would lose the paste feature outright.
 const MANUAL_LYRICS_STORE = "lyricsManual";
+// AI-reconstructed lyrics, in a third store of their own. The sourced
+// cache above stays pure — nothing synthesised ever lands in it, so a
+// real lookup and a model's best guess can never be confused for one
+// another. They are persisted (which LYRICS_STORE's comment rules out for
+// itself) for one reason: lyrics are only useful in Karaoke if they are
+// there with no connection, and re-asking a model on every launch is both
+// slower and less consistent than keeping the one answer. Everything that
+// reads this store carries the `ai` flag through, and the screen labels it.
+const AI_LYRICS_STORE = "lyricsAi";
+// One record per track the lyrics sweep has tried and failed on:
+// { trackId, attempts, lastAttemptAt, failure }. Without it the sweep
+// would re-ask every source for the same unfindable track on every
+// launch, which is both pointless and the fastest way to get rate-limited
+// out of finding the tracks that *are* there. See lyricsPrefetch.js for
+// the backoff this feeds.
+const LYRICS_ATTEMPTS_STORE = "lyricsAttempts";
+// Tracks whose file is present but which the audio element could not
+// decode — a truncated download, a mislabelled container, a 0-byte stub.
+// A file like that is not music as far as the app is concerned, so it is
+// filtered out of the library at hydration time rather than left in the
+// lists to be tapped and fail again. Keyed by track id, and deliberately
+// durable across launches; a full rescan clears the whole store (see
+// clearUnplayableMarkers) so an explicitly re-downloaded file gets a
+// fresh chance.
+const UNPLAYABLE_STORE = "unplayable";
 
 // Metadata the user established for a track — either by confirming an
 // online match or by stating it outright in the cleaner. Its own store,
@@ -62,6 +87,13 @@ function openDb() {
       }
       if (!db.objectStoreNames.contains(TRACK_METADATA_STORE)) {
         db.createObjectStore(TRACK_METADATA_STORE, { keyPath: "trackId" });
+      }
+      if (!db.objectStoreNames.contains(AI_LYRICS_STORE)) db.createObjectStore(AI_LYRICS_STORE, { keyPath: "trackId" });
+      if (!db.objectStoreNames.contains(LYRICS_ATTEMPTS_STORE)) {
+        db.createObjectStore(LYRICS_ATTEMPTS_STORE, { keyPath: "trackId" });
+      }
+      if (!db.objectStoreNames.contains(UNPLAYABLE_STORE)) {
+        db.createObjectStore(UNPLAYABLE_STORE, { keyPath: "trackId" });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -178,6 +210,12 @@ async function buildRecord(t, shrinkCache) {
   };
 }
 
+// `fingerprint` is optional: the callers that re-save a library they
+// trimmed (a delete, or the launch-time prune of files that are no longer
+// on disk) know the track list but not a freshly-walked folder summary.
+// Passing nothing keeps whatever was stored rather than nulling it, since
+// "no fingerprint" is read elsewhere as "this cache predates
+// fingerprinting" and silently adopts the next walk.
 export async function saveLibrary({ tracks, folderPath, fingerprint }) {
   const shrinkCache = new Map();
   const records = new Array(tracks.length);
@@ -194,6 +232,12 @@ export async function saveLibrary({ tracks, folderPath, fingerprint }) {
 
   const db = await openDb();
   try {
+    // Read before the write transaction opens, not inside it — an await
+    // mid-transaction is a good way to find out the hard way that the
+    // transaction auto-committed underneath you.
+    const previous = fingerprint
+      ? null
+      : await promisifyRequest(db.transaction(META_STORE, "readonly").objectStore(META_STORE).get("info"));
     const tx = db.transaction([TRACKS_STORE, META_STORE], "readwrite");
     tx.objectStore(TRACKS_STORE).clear();
     for (const r of records) tx.objectStore(TRACKS_STORE).put(r);
@@ -207,7 +251,7 @@ export async function saveLibrary({ tracks, folderPath, fingerprint }) {
       // reparsing anything. Absent on caches written before this existed,
       // which loadLibraryFingerprint reports as "unknown" rather than
       // "changed", so an upgrade doesn't greet everyone with a prompt.
-      fingerprint: fingerprint || null,
+      fingerprint: fingerprint || previous?.fingerprint || null,
     });
     await txDone(tx);
   } finally {
@@ -650,6 +694,208 @@ export async function loadManualLyricsRecord(trackId) {
     return record || null;
   } catch {
     return null;
+  } finally {
+    db?.close();
+  }
+}
+
+// --- AI lyrics, lookup attempts, unplayable files ---------------------
+
+// Keyed by track id like the sourced cache, but in its own store — see
+// AI_LYRICS_STORE for why these can't share one.
+export async function saveAiLyrics(trackId, entry) {
+  if (typeof indexedDB === "undefined" || !trackId) return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(AI_LYRICS_STORE, "readwrite");
+    tx.objectStore(AI_LYRICS_STORE).put({ trackId, ...entry, savedAt: Date.now() });
+    await txDone(tx);
+  } catch {
+    /* non-fatal — the reconstruction still shows for this session */
+  } finally {
+    db?.close();
+  }
+}
+
+export async function loadAiLyrics(trackId) {
+  if (typeof indexedDB === "undefined" || !trackId) return null;
+  let db;
+  try {
+    db = await openDb();
+    const record = await promisifyRequest(
+      db.transaction(AI_LYRICS_STORE, "readonly").objectStore(AI_LYRICS_STORE).get(trackId)
+    );
+    return record || null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+// { attempts, lastAttemptAt, failure } for one track, or null if the
+// sweep has never tried it.
+export async function loadLyricsAttempt(trackId) {
+  if (typeof indexedDB === "undefined" || !trackId) return null;
+  let db;
+  try {
+    db = await openDb();
+    const record = await promisifyRequest(
+      db.transaction(LYRICS_ATTEMPTS_STORE, "readonly").objectStore(LYRICS_ATTEMPTS_STORE).get(trackId)
+    );
+    return record || null;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+export async function recordLyricsAttempt(trackId, failure) {
+  if (typeof indexedDB === "undefined" || !trackId) return;
+  let db;
+  try {
+    db = await openDb();
+    const previous = await promisifyRequest(
+      db.transaction(LYRICS_ATTEMPTS_STORE, "readonly").objectStore(LYRICS_ATTEMPTS_STORE).get(trackId)
+    );
+    const tx = db.transaction(LYRICS_ATTEMPTS_STORE, "readwrite");
+    tx.objectStore(LYRICS_ATTEMPTS_STORE).put({
+      trackId,
+      attempts: (previous?.attempts || 0) + 1,
+      lastAttemptAt: Date.now(),
+      failure: failure || null,
+    });
+    await txDone(tx);
+  } catch {
+    /* non-fatal — worst case the track is retried sooner than intended */
+  } finally {
+    db?.close();
+  }
+}
+
+export async function clearLyricsAttempt(trackId) {
+  if (typeof indexedDB === "undefined" || !trackId) return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(LYRICS_ATTEMPTS_STORE, "readwrite");
+    tx.objectStore(LYRICS_ATTEMPTS_STORE).delete(trackId);
+    await txDone(tx);
+  } catch {
+    /* non-fatal */
+  } finally {
+    db?.close();
+  }
+}
+
+// Which track ids already have lyrics of any kind, and which the sweep
+// has already tried. One pass over keys rather than a get() per track:
+// the sweep asks this about the entire library on every pass, and for a
+// 700-track library that is the difference between four key scans and
+// ~2800 individual reads.
+export async function loadLyricsIndex() {
+  const empty = { sourced: new Set(), manual: new Set(), ai: new Set(), attempts: new Map() };
+  if (typeof indexedDB === "undefined") return empty;
+  let db;
+  try {
+    db = await openDb();
+    const keysOf = async (store) =>
+      new Set(await promisifyRequest(db.transaction(store, "readonly").objectStore(store).getAllKeys()));
+    const [sourced, manual, ai] = await Promise.all([
+      keysOf(LYRICS_STORE),
+      keysOf(MANUAL_LYRICS_STORE),
+      keysOf(AI_LYRICS_STORE),
+    ]);
+    const attemptRecords = await promisifyRequest(
+      db.transaction(LYRICS_ATTEMPTS_STORE, "readonly").objectStore(LYRICS_ATTEMPTS_STORE).getAll()
+    );
+    const attempts = new Map();
+    for (const r of attemptRecords || []) attempts.set(r.trackId, r);
+    return { sourced, manual, ai, attempts };
+  } catch {
+    return empty;
+  } finally {
+    db?.close();
+  }
+}
+
+// Marks a track's file as something the audio element can't decode, so
+// hydration can leave it out of the library entirely.
+export async function markUnplayable(trackId, { reason, relativePath, size } = {}) {
+  if (typeof indexedDB === "undefined" || !trackId) return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(UNPLAYABLE_STORE, "readwrite");
+    tx.objectStore(UNPLAYABLE_STORE).put({
+      trackId,
+      reason: reason || "undecodable",
+      relativePath: relativePath || null,
+      size: size ?? null,
+      markedAt: Date.now(),
+    });
+    await txDone(tx);
+  } catch {
+    /* non-fatal — the track is still filtered out for this session */
+  } finally {
+    db?.close();
+  }
+}
+
+export async function loadUnplayableIds() {
+  if (typeof indexedDB === "undefined") return new Set();
+  let db;
+  try {
+    db = await openDb();
+    const keys = await promisifyRequest(
+      db.transaction(UNPLAYABLE_STORE, "readonly").objectStore(UNPLAYABLE_STORE).getAllKeys()
+    );
+    return new Set(keys || []);
+  } catch {
+    return new Set();
+  } finally {
+    db?.close();
+  }
+}
+
+// Wiped by an explicit full rescan: the user re-downloading a file that
+// was truncated and asking the app to look again is exactly the case
+// where a permanent mark would be wrong.
+export async function clearUnplayableMarkers() {
+  if (typeof indexedDB === "undefined") return;
+  let db;
+  try {
+    db = await openDb();
+    const tx = db.transaction(UNPLAYABLE_STORE, "readwrite");
+    tx.objectStore(UNPLAYABLE_STORE).clear();
+    await txDone(tx);
+  } catch {
+    /* non-fatal */
+  } finally {
+    db?.close();
+  }
+}
+
+// Drops every trace of a track that no longer exists: its lyrics (all
+// three kinds), its lookup attempts, its unplayable mark and any
+// established metadata. Called when a file has gone from disk — leaving
+// the rows behind would mean a future file that happened to hash to the
+// same id inherits a dead track's data.
+export async function forgetTracks(trackIds) {
+  if (typeof indexedDB === "undefined" || !trackIds?.length) return;
+  let db;
+  try {
+    db = await openDb();
+    const stores = [LYRICS_STORE, MANUAL_LYRICS_STORE, AI_LYRICS_STORE, LYRICS_ATTEMPTS_STORE, UNPLAYABLE_STORE, TRACK_METADATA_STORE];
+    const tx = db.transaction(stores, "readwrite");
+    for (const store of stores) {
+      for (const id of trackIds) tx.objectStore(store).delete(id);
+    }
+    await txDone(tx);
+  } catch {
+    /* non-fatal */
   } finally {
     db?.close();
   }

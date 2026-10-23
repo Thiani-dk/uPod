@@ -36,7 +36,7 @@ export default class ErrorBoundary extends React.Component {
           textAlign: "center",
         }}
       >
-        <NoteMark size={40} style={{ color: "var(--accent)", opacity: 0.7 }} />
+        <NoteMark size={40} style={{ color: "var(--accent-text)", opacity: 0.7 }} />
         <div style={{ fontSize: 15, fontWeight: 600 }}>Something went wrong</div>
         <div className="settings-row-sub" style={{ maxWidth: 320 }}>
           This screen hit an error and couldn't display.

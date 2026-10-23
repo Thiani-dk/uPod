@@ -66,7 +66,7 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
           className={`detail-cover ${cover ? "" : "cover-glass"}`}
           style={{ position: "relative", ...(cover ? { background: `url(${cover}) center/cover` } : {}) }}
         >
-          {!cover && <Wand2 size={48} style={{ color: "var(--accent)" }} />}
+          {!cover && <Wand2 size={48} style={{ color: "var(--accent-text)" }} />}
           <input
             ref={coverInputRef}
             type="file"
@@ -151,7 +151,7 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
                 onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
                 aria-label="Add to playlist"
                 title="Add to playlist"
-                style={trackIsFavorited ? { color: "var(--accent)" } : undefined}
+                style={trackIsFavorited ? { color: "var(--accent-text)" } : undefined}
               >
                 <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
               </button>

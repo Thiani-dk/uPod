@@ -157,4 +157,88 @@ export async function extractCoverAppearance(coverDataUrl) {
   }
 }
 
+// --- Contrast-safe variants -------------------------------------------
+//
+// The extracted accent is chosen to look good, which is not the same as
+// being readable. Two things go wrong, and both were measured on real
+// screens rather than assumed:
+//
+//   - accent as TEXT on the page background. A cover that yields a deep
+//     magenta (L≈0.42) reads at 2.8:1 on Matte Obsidian — the Play Now
+//     stat figures were effectively unreadable on a dark track.
+//   - white text on an accent FILL. uPod's own pink at #EC4899 carries
+//     white at 3.53:1, under the 4.5:1 small-text threshold, which is
+//     every primary button and the selected tab.
+//
+// So the accent is published as three variables rather than one:
+// --accent (unchanged — fills, borders, sliders, anything that isn't
+// carrying text), --accent-text (lightened or darkened until it clears
+// 4.5:1 against this theme's background), and --accent-fill (adjusted
+// until white text on it clears 4.5:1). Nothing clamps the hue, so the
+// per-track identity survives; only lightness moves.
+
+const THEME_BG = { glass: "#E7EAF5", obsidian: "#0A0A0C" };
+
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function relativeLuminance([r, g, b]) {
+  const f = (v) => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+
+function contrast(a, b) {
+  const l1 = relativeLuminance(a);
+  const l2 = relativeLuminance(b);
+  return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+}
+
+const MIN_CONTRAST = 4.5;
+// The text variant aims higher than the 4.5:1 it has to hit, because the
+// background it is measured against (the theme's page colour) is not
+// always the background it lands on: panels, cards and list rows sit a
+// few percent lighter than the page on Obsidian, and an accent tuned to
+// exactly 4.5:1 against the page measured 4.07:1 on a panel. The extra
+// headroom covers every surface in the app rather than the darkest one.
+const MIN_TEXT_CONTRAST = 5.3;
+
+// Walks the accent's lightness in `step` increments until it clears
+// `minContrast` against `against`, keeping hue and saturation. Capped so
+// a hopeless case degrades to near-black/near-white rather than looping.
+function shiftUntilReadable(hex, against, step, minContrast = MIN_CONTRAST) {
+  const rgb = hexToRgb(hex);
+  const target = hexToRgb(against);
+  if (!rgb || !target) return hex;
+  const [h, s, l] = rgbToHsl(rgb[0], rgb[1], rgb[2]);
+  let lightness = l;
+  for (let i = 0; i < 40; i++) {
+    const candidate = hslToHex(h, s, lightness);
+    if (contrast(hexToRgb(candidate), target) >= minContrast) return candidate;
+    lightness += step;
+    if (lightness <= 0 || lightness >= 1) break;
+  }
+  return hslToHex(h, s, Math.max(0, Math.min(1, lightness)));
+}
+
+// The accent, made readable as text on the given theme's background.
+export function accentTextColor(hex, theme) {
+  const bg = THEME_BG[theme] || THEME_BG.glass;
+  // Dark background: lighten towards readable. Light background: darken.
+  return shiftUntilReadable(hex, bg, theme === "obsidian" ? 0.03 : -0.03, MIN_TEXT_CONTRAST);
+}
+
+// The accent, made dark enough that white text sits on it legibly. Always
+// darkens — lightening would eventually turn the fill white and the label
+// with it.
+export function accentFillColor(hex) {
+  return shiftUntilReadable(hex, "#FFFFFF", -0.03);
+}
+
 export { FALLBACK_ACCENT };

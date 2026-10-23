@@ -33,6 +33,7 @@ import ReviewTracks from "./screens/ReviewTracks";
 import WelcomeOnboarding from "./screens/WelcomeOnboarding";
 import { AllFilesAccess } from "./utils/allFilesAccess";
 import { getFontStack } from "./utils/fonts";
+import { accentTextColor, accentFillColor } from "./utils/accentColor";
 
 // Where the hardware/gesture back button should land from each top-level
 // screen — mirrors the same targets each screen's own on-screen back
@@ -59,7 +60,43 @@ const SCREEN_BACK_TARGETS = {
 // forward. When it fires the app falls back to the old behaviour: the
 // library screen with its loading skeleton, which is honest about still
 // working rather than pretending to be empty.
-const SPLASH_CEILING_MS = 8000;
+const SPLASH_CEILING_MS = 12000;
+
+// The logo is held for at least this long. Not a stall for its own sake:
+// hydration can finish in a couple of hundred milliseconds on a warm
+// start, and lifting the splash that fast produces a flash of logo rather
+// than a launch — and it lands the user on a screen whose covers are
+// still decoding, which is the "it needs a second or two after the logo"
+// feeling. Below this the launch doesn't read as faster, it reads as
+// janky.
+const SPLASH_MIN_MS = 900;
+
+// Extra grace, after hydration, for the current track's cover to decode
+// before the splash lifts. Capped because a cover that won't decode must
+// not be able to hold the app behind a logo.
+const COVER_WARMUP_MS = 600;
+
+// How many album covers from the top of the library grid to decode before
+// lifting the splash — roughly the first screenful, since anything below
+// the fold has until the user scrolls to it.
+const SPLASH_WARM_COVERS = 12;
+
+// Resolves once the image at `url` is decoded and ready to paint, or
+// after `timeout` either way. Launch readiness is allowed to wait on this
+// but never to depend on it.
+function warmImage(url, timeout) {
+  if (!url) return Promise.resolve();
+  return Promise.race([
+    new Promise((resolve) => {
+      const img = new Image();
+      img.onload = resolve;
+      img.onerror = resolve;
+      img.src = url;
+      img.decode?.().then(resolve, resolve);
+    }),
+    new Promise((resolve) => setTimeout(resolve, timeout)),
+  ]);
+}
 
 function Shell() {
   const { theme, accentColor, artDim, fontFamily, queue, queueIndex, albums, backgroundKillNotice, newMusicFound, loadingLibrary, libraryHydrating, resumePrompt, classicMode, miniPlayerHidden } =
@@ -247,6 +284,9 @@ function Shell() {
     });
   }
 
+  // When this component first mounted — the splash has been up since
+  // before that, so this is a conservative floor for SPLASH_MIN_MS.
+  const mountedAtRef = useRef(Date.now());
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     // Both conditions matter: hydration decides whether the library is
@@ -254,12 +294,38 @@ function Shell() {
     // the right screen — lifting the splash while that's still null
     // would show the blank placeholder root.
     if (libraryHydrating || needsOnboarding === null) return;
-    // Two frames, so the render that carries the hydrated library (and
-    // the one Play Now's own stats effect schedules right after it) has
-    // actually painted underneath before the logo lifts. Hiding on the
-    // effect alone can reveal a frame of the pre-stats screen.
-    const raf = requestAnimationFrame(() => requestAnimationFrame(hideSplash));
-    return () => cancelAnimationFrame(raf);
+
+    let cancelled = false;
+    let raf;
+    (async () => {
+      // The restored queue's cover is the one image guaranteed to be on
+      // screen the instant the splash lifts (the mini player, and Now
+      // Playing if that's where the user left off). Decoding it behind
+      // the logo is the difference between arriving at a finished screen
+      // and watching it fill in.
+      await Promise.all([
+        warmImage(queue[queueIndex]?.cover, COVER_WARMUP_MS),
+        // Plus the album art the library grid opens on. All in parallel
+        // and all behind the same cap, so this costs the launch one
+        // COVER_WARMUP_MS at worst however many there are — and saves the
+        // first screen from visibly filling in tile by tile.
+        ...albums.slice(0, SPLASH_WARM_COVERS).map((a) => warmImage(a.cover, COVER_WARMUP_MS)),
+      ]);
+      const elapsed = Date.now() - mountedAtRef.current;
+      if (elapsed < SPLASH_MIN_MS) {
+        await new Promise((resolve) => setTimeout(resolve, SPLASH_MIN_MS - elapsed));
+      }
+      if (cancelled) return;
+      // Two frames, so the render that carries the hydrated library (and
+      // the one Play Now's own stats effect schedules right after it) has
+      // actually painted underneath before the logo lifts. Hiding on the
+      // effect alone can reveal a frame of the pre-stats screen.
+      raf = requestAnimationFrame(() => requestAnimationFrame(hideSplash));
+    })();
+    return () => {
+      cancelled = true;
+      if (raf) cancelAnimationFrame(raf);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [libraryHydrating, needsOnboarding]);
 
@@ -295,7 +361,17 @@ function Shell() {
   }
 
   const rootClass = Capacitor.isNativePlatform() ? "upod-root native-platform" : "upod-root";
-  const rootStyle = { "--accent": accentColor, "--art-dim": artDim, fontFamily: getFontStack(fontFamily) };
+  // --accent stays exactly what the cover gave us (fills, borders,
+  // sliders). The other two are the same colour moved only in lightness
+  // until it is actually readable — as text on this theme's background,
+  // and as a background under white text. See accentColor.js.
+  const rootStyle = {
+    "--accent": accentColor,
+    "--accent-text": accentTextColor(accentColor, theme),
+    "--accent-fill": accentFillColor(accentColor),
+    "--art-dim": artDim,
+    fontFamily: getFontStack(fontFamily),
+  };
 
   // needsOnboarding === null: still checking — render nothing rather than
   // flash the (empty) library before potentially replacing it with

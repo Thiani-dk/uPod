@@ -14,7 +14,7 @@ function TrackCarousel({ title, tracks, playTrackList, playTrackListFrom }) {
         {tracks.map((t) => (
           <button key={t.id} className="carousel-card" onClick={() => playTrackListFrom(tracks, t)}>
             <div className={`carousel-card-cover ${t.cover ? "" : "cover-glass"}`} style={t.cover ? { background: `url(${t.cover}) center/cover` } : undefined}>
-              {!t.cover && <NoteMark size={26} style={{ color: "var(--accent)" }} />}
+              {!t.cover && <NoteMark size={26} style={{ color: "var(--accent-text)" }} />}
             </div>
             <div className="carousel-card-title">{t.title}</div>
             <div className="carousel-card-sub">{t.artist}</div>
@@ -43,7 +43,7 @@ function AlbumCarousel({ title, albums, onOpenAlbum, playTrackList }) {
         {albums.map((al) => (
           <button key={al.id} className="carousel-card" onClick={() => onOpenAlbum(al)}>
             <div className={`carousel-card-cover ${al.cover ? "" : "cover-glass"}`} style={al.cover ? { background: `url(${al.cover}) center/cover` } : undefined}>
-              {!al.cover && <NoteMark size={26} style={{ color: "var(--accent)" }} />}
+              {!al.cover && <NoteMark size={26} style={{ color: "var(--accent-text)" }} />}
             </div>
             <div className="carousel-card-title">{al.title}</div>
             <div className="carousel-card-sub">{al.artist}</div>

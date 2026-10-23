@@ -82,7 +82,7 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
           style={{ position: "relative", ...(album.cover ? { background: `url(${album.cover}) center/cover` } : {}) }}
         >
           {!album.cover && (
-            <NoteMark size={56} style={{ color: "var(--accent)" }} />
+            <NoteMark size={56} style={{ color: "var(--accent-text)" }} />
           )}
           <input
             ref={coverInputRef}
@@ -132,7 +132,7 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
               className="icon-btn ring"
               onClick={toggleAlbumFavorite}
               title={albumIsFavorited ? "Remove all tracks from Favourite Tunes" : "Add all tracks to Favourite Tunes"}
-              style={albumIsFavorited ? { color: "var(--accent)", borderColor: "var(--accent)" } : undefined}
+              style={albumIsFavorited ? { color: "var(--accent-text)", borderColor: "var(--accent)" } : undefined}
             >
               <Heart size={16} fill={albumIsFavorited ? "currentColor" : "none"} />
             </button>
@@ -179,7 +179,7 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
                 <span className="track-title">
                   <span className="track-title-text">{t.title}</span>
                   {t.id === currentTrackId && (
-                    <span style={{ fontSize: 10, color: "var(--accent)", fontWeight: 700, marginLeft: 6, flexShrink: 0 }}>
+                    <span style={{ fontSize: 10, color: "var(--accent-text)", fontWeight: 700, marginLeft: 6, flexShrink: 0 }}>
                       playing
                     </span>
                   )}
@@ -196,7 +196,7 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
                     onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
                     aria-label="Add to playlist"
                     title="Add to playlist"
-                    style={trackIsFavorited ? { color: "var(--accent)" } : undefined}
+                    style={trackIsFavorited ? { color: "var(--accent-text)" } : undefined}
                   >
                     <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
                   </button>

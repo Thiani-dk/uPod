@@ -678,7 +678,7 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
           <img className="np-immersive-art-img" src={track.cover} alt="" />
         ) : (
           <div className="np-immersive-art-fallback cover-glass">
-            <NoteMark size={120} style={{ color: "var(--accent)" }} />
+            <NoteMark size={120} style={{ color: "var(--accent-text)" }} />
           </div>
         )}
         {/* The accent wash. Painted once, never animated. */}
@@ -741,7 +741,7 @@ export default function NowPlaying({ onOpenAlbum, onOpenEq, onOpenKaraoke }) {
           aria-label="Cover art — double-tap for immersive view, triple-tap to open the album"
         >
           {!track.cover && (
-            <NoteMark size={120} style={{ color: "var(--accent)" }} />
+            <NoteMark size={120} style={{ color: "var(--accent-text)" }} />
           )}
         </div>
 

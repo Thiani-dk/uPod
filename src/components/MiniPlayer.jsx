@@ -75,7 +75,7 @@ export default function MiniPlayer({ onOpen }) {
         className={`mini-art ${track.cover ? "" : "cover-glass"}`}
         style={track.cover ? { background: `url(${track.cover}) center/cover` } : { display: "flex", alignItems: "center", justifyContent: "center" }}
       >
-        {!track.cover && <NoteMark size={18} style={{ color: "var(--accent)" }} />}
+        {!track.cover && <NoteMark size={18} style={{ color: "var(--accent-text)" }} />}
       </div>
       <div className="mini-meta">
         <div className="mini-title">{track.title}</div>

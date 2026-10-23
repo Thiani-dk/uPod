@@ -276,7 +276,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                       className={`album-cover ${al.cover ? "" : "cover-glass"}`}
                       style={al.cover ? { background: `url(${al.cover}) center/cover` } : undefined}
                     >
-                      {!al.cover && <NoteMark size={40} style={{ color: "var(--accent)" }} />}
+                      {!al.cover && <NoteMark size={40} style={{ color: "var(--accent-text)" }} />}
                     </div>
                     <div className="album-card-title">{al.title}</div>
                     <div className="album-card-artist">{al.artist}{al.year ? ` · ${al.year}` : ""}</div>
@@ -313,7 +313,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                     <div key={t.id} className="track-row-wrap track-row-thumb-wrap">
                       <button className="track-row-play track-row-with-thumb" onClick={() => playSong(t)}>
                         <div className={`track-row-thumb ${t.cover ? "" : "cover-glass"}`} style={t.cover ? { background: `url(${t.cover}) center/cover` } : undefined}>
-                          {!t.cover && <NoteMark size={18} style={{ color: "var(--accent)" }} />}
+                          {!t.cover && <NoteMark size={18} style={{ color: "var(--accent-text)" }} />}
                         </div>
                         <span className="track-row-text">
                           <span className="track-row-text-title">{t.title}</span>
@@ -325,7 +325,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                         onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
                         aria-label="Add to playlist"
                         title="Add to playlist"
-                        style={isFavorite ? { color: "var(--accent)" } : undefined}
+                        style={isFavorite ? { color: "var(--accent-text)" } : undefined}
                       >
                         <Bookmark size={15} fill={isFavorite ? "currentColor" : "none"} />
                       </button>
@@ -355,7 +355,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                 style={al.cover ? { background: `url(${al.cover}) center/cover` } : undefined}
               >
                 {!al.cover && (
-                  <NoteMark size={40} style={{ color: "var(--accent)" }} />
+                  <NoteMark size={40} style={{ color: "var(--accent-text)" }} />
                 )}
               </div>
               <div className="album-card-title">{al.title}</div>
@@ -443,7 +443,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                     <BulkSelectBox checked={selected} />
                   ) : (
                     <div className={`track-row-thumb ${t.cover ? "" : "cover-glass"}`} style={t.cover ? { background: `url(${t.cover}) center/cover` } : undefined}>
-                      {!t.cover && <NoteMark size={18} style={{ color: "var(--accent)" }} />}
+                      {!t.cover && <NoteMark size={18} style={{ color: "var(--accent-text)" }} />}
                     </div>
                   )}
                   <span className="track-row-text">

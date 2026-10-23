@@ -181,12 +181,23 @@ function fingerprintEntries(entries) {
 // half of a real scan (~1.4% of the cost). Filters exactly the way
 // scanNativeFolder does, so the numbers are directly comparable to the
 // fingerprint stored alongside a cached library.
+// `paths` is the walk's full relative-path list, returned alongside the
+// summary because the walk already has it and it costs nothing to pass
+// up. It's what makes "which cached tracks are no longer on disk?"
+// answerable without a single extra native call — the counts in the
+// fingerprint can tell you *that* something changed, but only the paths
+// can tell you *what*, and a file deleted outside the app has to come out
+// of the library rather than sit there as a dead row.
 export async function fingerprintNativeFolder() {
   const granted = await ensureStoragePermission();
   if (!granted) throw new Error("Storage permission was denied.");
   const musicFolder = await getMusicFolderPath();
   const entries = (await walkAudioEntries(musicFolder, "")).filter((e) => !isVoiceNote(e.name));
-  return { ...fingerprintEntries(entries), folderPath: musicFolder };
+  return {
+    ...fingerprintEntries(entries),
+    folderPath: musicFolder,
+    paths: entries.map((e) => e.relativePath),
+  };
 }
 
 // Parses `entries` into tracks with up to `concurrency` in flight at once
@@ -264,6 +275,28 @@ export async function readNativeTrackObjectUrl({ folderPath, relativePath }) {
   });
   const blob = base64ToBlob(readResult.data, mimeForExt(ext));
   return URL.createObjectURL(blob);
+}
+
+// Whether a track's file is still where the library thinks it is. Used to
+// tell the two kinds of "couldn't play this" apart: a file that has been
+// deleted or moved (drop the track) versus one that's present but won't
+// decode (mark it unplayable). Returns false rather than throwing on any
+// failure, including permission — a check that can't answer is treated as
+// "don't claim the file is there", and the caller's fallback is the
+// gentler of the two paths either way.
+export async function nativeTrackExists({ folderPath, relativePath }) {
+  if (!folderPath || !relativePath) return false;
+  try {
+    const stat = await Filesystem.stat({
+      path: `${folderPath}/${relativePath}`,
+      directory: Directory.ExternalStorage,
+    });
+    // A 0-byte file is a failed/interrupted download, not a track. It
+    // exists as far as the filesystem is concerned and will never decode.
+    return stat.type !== "directory" && (stat.size === undefined || stat.size > 0);
+  } catch {
+    return false;
+  }
 }
 
 // Permanently deletes a track's file from device storage. Filesystem's

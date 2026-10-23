@@ -13,24 +13,32 @@ import { BACKGROUND_PLAYBACK_GUIDANCE } from "../utils/backgroundPlaybackWatchdo
 import { WHEEL_SENSITIVITIES } from "../classic/ClickWheel";
 import { HAPTIC_STRENGTHS } from "../classic/haptics";
 
+// Deliberately <span>s wearing the transport classes rather than real
+// buttons: this preview lives *inside* the <button class="pack-row"> that
+// selects the pack, and a button inside a button is invalid HTML. React
+// said so in the console ("<button> cannot contain a nested <button>"),
+// and the practical cost is a nested control that swallows its own taps
+// instead of selecting the pack. They were already tabIndex={-1}, so
+// nothing is lost by them not being buttons — they were never meant to be
+// pressed.
 function PackPreview({ pack }) {
   const { shuffle: ShuffleIcon, back: BackIcon, forward: ForwardIcon, repeat: RepeatIcon } = pack.icons;
   return (
-    <div className={pack.cls} style={{ marginTop: 0 }}>
-      <button className="tp-btn tp-side tp-outer" tabIndex={-1}><RepeatIcon size={14} /></button>
-      <button className="tp-btn tp-side" tabIndex={-1}><BackIcon size={16} /></button>
-      <button className="tp-btn tp-main" tabIndex={-1}><PlayGlyph size={18} /></button>
-      <button className="tp-btn tp-side" tabIndex={-1}><ForwardIcon size={16} /></button>
-      <button className="tp-btn tp-side tp-outer" tabIndex={-1}><ShuffleIcon size={14} /></button>
+    <div className={pack.cls} style={{ marginTop: 0 }} aria-hidden="true">
+      <span className="tp-btn tp-side tp-outer"><RepeatIcon size={14} /></span>
+      <span className="tp-btn tp-side"><BackIcon size={16} /></span>
+      <span className="tp-btn tp-main"><PlayGlyph size={18} /></span>
+      <span className="tp-btn tp-side"><ForwardIcon size={16} /></span>
+      <span className="tp-btn tp-side tp-outer"><ShuffleIcon size={14} /></span>
     </div>
   );
 }
 
 export default function Settings({ onOpenReviewTracks }) {
-  const { theme, buttonPack, fontFamily, selectedFolderName, albums, library, libraryError, loadingLibrary, libraryProgress, checkingForNewMusic, newMusicFound, classicMode, classicWheelSensitivity, classicHapticStrength } =
+  const { theme, buttonPack, fontFamily, selectedFolderName, albums, library, libraryError, loadingLibrary, libraryProgress, checkingForNewMusic, newMusicFound, lyricsSweep, classicMode, classicWheelSensitivity, classicHapticStrength } =
     usePlayerState();
   const pendingReviewCount = library.filter((t) => t.possiblyNotMusic && !t.reviewStatus).length;
-  const { setTheme, setButtonPack, pickFolder, pickNativeFolder, checkForNewMusic, setClassicMode, setClassicWheelSensitivity, setClassicHapticStrength } = usePlayerActions();
+  const { setTheme, setButtonPack, pickFolder, pickNativeFolder, checkForNewMusic, runLyricsSweep, setClassicMode, setClassicWheelSensitivity, setClassicHapticStrength } = usePlayerActions();
   const inputRef = useRef(null);
   const [fontPickerOpen, setFontPickerOpen] = useState(false);
   const isNative = Capacitor.isNativePlatform();
@@ -160,6 +168,26 @@ export default function Settings({ onOpenReviewTracks }) {
             </div>
             <button className="ghost-btn" onClick={pickNativeFolder} disabled={loadingLibrary}>
               {loadingLibrary ? "Scanning…" : "Rescan"}
+            </button>
+          </div>
+        )}
+
+        {isNative && (
+          <div className="settings-row">
+            <div>
+              <div className="settings-row-label">Offline lyrics</div>
+              <div className="settings-row-sub">
+                {lyricsSweep?.running
+                  ? lyricsSweep.throttled
+                    ? `Paused — the lyrics service is rate-limiting us. ${lyricsSweep.done}/${lyricsSweep.pending} looked up so far.`
+                    : `Looking up lyrics… ${lyricsSweep.done}/${lyricsSweep.pending}`
+                  : lyricsSweep
+                    ? `${lyricsSweep.found} of ${lyricsSweep.total} tracks have lyrics saved for offline karaoke.`
+                    : "uPod looks lyrics up in the background and saves them, so Karaoke works with no connection."}
+              </div>
+            </div>
+            <button className="ghost-btn" onClick={runLyricsSweep} disabled={lyricsSweep?.running}>
+              {lyricsSweep?.running ? "Working…" : "Fetch now"}
             </button>
           </div>
         )}
