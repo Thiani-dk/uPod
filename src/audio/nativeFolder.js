@@ -17,6 +17,14 @@ export const MUSIC_FOLDER_ROOT = "Download";
 // Used the first time the app runs, and whenever the stored path is reset.
 export const DEFAULT_MUSIC_FOLDER = "Download/Music Downloads";
 
+// Where @capacitor/filesystem's Directory.ExternalStorage alias actually
+// points on every Android device. Only needed to translate the absolute
+// paths yt-dlp prints back into folder-relative ones — see
+// relativePathFromAbsolute, and the same constant in audioDownload.js
+// for why a native process has to be given a real path in the first
+// place.
+const SHARED_STORAGE_ROOT = "/storage/emulated/0";
+
 const STORAGE_KEY = "upod_music_folder_path";
 const CONFIRMED_ONCE_KEY = "upod_folder_confirmed_once";
 
@@ -314,4 +322,56 @@ export async function deleteNativeTrack({ folderPath, relativePath }) {
     path: `${folderPath}/${relativePath}`,
     directory: Directory.ExternalStorage,
   });
+}
+
+// Turns an absolute path (what yt-dlp reports when a download lands) into
+// the music-folder-relative one everything else here speaks in. Returns
+// null for anything outside the configured folder, so a file saved
+// somewhere unexpected is skipped rather than given a nonsense id.
+export function relativePathFromAbsolute(absolutePath, folderPath) {
+  if (!absolutePath || !folderPath) return null;
+  const prefix = `${SHARED_STORAGE_ROOT}/${folderPath}/`;
+  if (!absolutePath.startsWith(prefix)) return null;
+  const rest = absolutePath.slice(prefix.length);
+  return rest && isAudioFile(rest) ? rest : null;
+}
+
+// Parses a known handful of files instead of walking the whole tree —
+// the arrival path for files uPod just downloaded itself, where the
+// names are already known and a full rescan (~33s on this library, every
+// tag re-read) to learn about three new tracks would be absurd. Same
+// parse as the real scan, so the tracks it returns are indistinguishable
+// from scanned ones; a file that can't be stat'ed (still being written,
+// moved away again) is simply left out rather than failing the batch.
+export async function scanNativePaths(relativePaths) {
+  const granted = await ensureStoragePermission();
+  if (!granted) throw new Error("Storage permission was denied.");
+
+  const musicFolder = await getMusicFolderPath();
+  const tracks = [];
+  for (const relativePath of relativePaths) {
+    try {
+      const stat = await Filesystem.stat({
+        path: `${musicFolder}/${relativePath}`,
+        directory: Directory.ExternalStorage,
+      });
+      if (stat.type === "directory" || !stat.size) continue;
+      tracks.push(
+        await parseNativeTrackDescriptor({
+          name: relativePath.split("/").pop(),
+          relativePath,
+          folderPath: musicFolder,
+          directory: Directory.ExternalStorage,
+          size: stat.size,
+          // Filesystem.stat reports mtime in milliseconds, same unit
+          // readdir uses — so an arrival's id and addedAt match exactly
+          // what a later full rescan would compute for the same file.
+          mtime: stat.mtime,
+        })
+      );
+    } catch (err) {
+      console.warn(`Couldn't read downloaded file ${relativePath}:`, err);
+    }
+  }
+  return { tracks, folderPath: musicFolder };
 }

@@ -40,6 +40,14 @@ public class AudioDownloadPlugin extends Plugin {
     private static final String EVENT_PROGRESS = "progress";
     private static final String EVENT_DONE = "done";
     private static final String EVENT_FAILED = "failed";
+    // Fired when uPod was opened by a tap on the "downloads finished"
+    // notification, rather than by the launcher — the JS side answers it
+    // by opening the review sheet for what just arrived.
+    private static final String EVENT_REVIEW = "reviewRequested";
+
+    // Set on the notification's PendingIntent, read back off whatever
+    // intent started (or resumed) MainActivity.
+    static final String EXTRA_OPEN_REVIEW = "upod_open_download_review";
 
     // Single thread, so two shares in quick succession queue rather than
     // fighting each other for bandwidth and CPU on a phone.
@@ -47,7 +55,20 @@ public class AudioDownloadPlugin extends Plugin {
 
     private boolean engineReady = false;
 
+    // A notification tap that arrived before the web layer was listening
+    // (cold start, or a reload) is parked here for getPendingReview().
+    private boolean pendingReview = false;
+
     private static final String CHANNEL_ID = "upod_downloads";
+    // The batch summary gets its own channel: unlike the progress
+    // notifications it is a thing that happened rather than a thing that
+    // is happening, and it is worth a glance — DEFAULT so it can make a
+    // sound and show a heads-up banner, which IMPORTANCE_LOW suppresses.
+    private static final String CHANNEL_DONE_ID = "upod_downloads_done";
+    // One stable id, so a second batch replaces the first rather than
+    // stacking "3 tracks saved" under "2 tracks saved" — only the newest
+    // arrival is reviewable anyway.
+    private static final int SUMMARY_NOTIFICATION_ID = 0x7D0D;
     // Rebuilding a notification on every yt-dlp progress line (several a
     // second) is enough posting traffic for Android to start dropping
     // updates and for the shade to visibly stutter, so updates are
@@ -58,13 +79,21 @@ public class AudioDownloadPlugin extends Plugin {
     private void ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager manager = getContext().getSystemService(NotificationManager.class);
-        if (manager == null || manager.getNotificationChannel(CHANNEL_ID) != null) return;
+        if (manager == null) return;
         // LOW: a download is worth showing, never worth a sound or a
         // heads-up banner over whatever the user is actually doing.
-        NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Downloads", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("Progress for audio saved from a shared link");
-        channel.setShowBadge(false);
-        manager.createNotificationChannel(channel);
+        if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Downloads", NotificationManager.IMPORTANCE_LOW);
+            channel.setDescription("Progress for audio saved from a shared link");
+            channel.setShowBadge(false);
+            manager.createNotificationChannel(channel);
+        }
+        if (manager.getNotificationChannel(CHANNEL_DONE_ID) == null) {
+            NotificationChannel done = new NotificationChannel(CHANNEL_DONE_ID, "Finished downloads", NotificationManager.IMPORTANCE_DEFAULT);
+            done.setDescription("Music that finished downloading and is waiting to be sorted into your library");
+            done.setShowBadge(true);
+            manager.createNotificationChannel(done);
+        }
     }
 
     // One notification per job, keyed by a stable hash of the job id.
@@ -72,7 +101,11 @@ public class AudioDownloadPlugin extends Plugin {
         return ("upod-dl-" + jobId).hashCode();
     }
 
-    private void postNotification(String jobId, String title, String text, Integer percent, boolean ongoing, boolean indeterminate) {
+    // Only ever the settled outcome of a job — "saved", or why it
+    // failed. Progress while a download is running belongs to
+    // DownloadForegroundService, which has to post a notification of its
+    // own anyway and would otherwise be counting to 100% beside this one.
+    private void postNotification(String jobId, String title, String text) {
         try {
             ensureChannel();
 
@@ -82,20 +115,13 @@ public class AudioDownloadPlugin extends Plugin {
                 getContext(), 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
             NotificationCompat.Builder builder = new NotificationCompat.Builder(getContext(), CHANNEL_ID)
-                .setSmallIcon(ongoing
-                    ? android.R.drawable.stat_sys_download
-                    : android.R.drawable.stat_sys_download_done)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setContentTitle(title)
                 .setContentText(text)
                 .setContentIntent(tap)
                 .setOnlyAlertOnce(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setOngoing(ongoing)
-                .setAutoCancel(!ongoing);
-
-            if (ongoing) {
-                builder.setProgress(100, percent == null ? 0 : percent, indeterminate);
-            }
+                .setAutoCancel(true);
 
             NotificationManagerCompat.from(getContext()).notify(notificationIdFor(jobId), builder.build());
         } catch (SecurityException ignored) {
@@ -221,6 +247,17 @@ public class AudioDownloadPlugin extends Plugin {
         }
         call.resolve();
 
+        // Promoted here rather than inside run(): this method is called
+        // straight off a tap in the quality sheet, so uPod is
+        // indisputably in the foreground and the API 31+ restriction on
+        // starting a foreground service from the background cannot
+        // bite. A job sitting behind others in the queue is covered by
+        // the service the first one already started.
+        DownloadForegroundService.startJob(
+            getContext(),
+            id,
+            outputName != null && !outputName.trim().isEmpty() ? outputName : "Saving audio");
+
         worker.execute(() -> run(id, url, directory, format, recode, outputName));
     }
 
@@ -230,6 +267,7 @@ public class AudioDownloadPlugin extends Plugin {
 
             File dir = new File(directory);
             if (!dir.isDirectory() && !dir.mkdirs()) {
+                DownloadForegroundService.stopJob(getContext(), id);
                 fail(id, "Couldn't create the download folder: " + directory);
                 return;
             }
@@ -254,6 +292,23 @@ public class AudioDownloadPlugin extends Plugin {
             // arrives in the library already describing itself rather
             // than as "dQw4w9WgXcQ" with everything blank.
             request.addOption("--embed-metadata");
+            // A shared playlist is almost always one body of work — an
+            // artist posting their own album is the case this was built
+            // for. yt-dlp knows the playlist's title and each entry's
+            // position, but writes neither into the file unless asked,
+            // so every track arrived with no album tag at all and the
+            // library (which keys albums off that tag) filed each song
+            // as an album of one. Mapping them across means a shared
+            // album lands as an album, in order, with no cleanup.
+            //
+            // Only for an actual playlist URL: on a single video these
+            // fields are absent and the mapping is a silent no-op, but
+            // being explicit keeps a lone download's tags untouched.
+            if (isPlaylistUrl(url)) {
+                request.addOption("--yes-playlist");
+                request.addOption("--parse-metadata", "playlist_title:%(meta_album)s");
+                request.addOption("--parse-metadata", "playlist_index:%(meta_track)s");
+            }
             // Keeps the video id in the name: two different uploads of
             // the same song would otherwise collide on title alone.
             // uPod's own scan reads "Artist - Title" filenames, so a
@@ -281,7 +336,6 @@ public class AudioDownloadPlugin extends Plugin {
             final String notifyTitle = outputName != null && !outputName.trim().isEmpty()
                 ? outputName
                 : "Saving audio";
-            postNotification(id, notifyTitle, "Starting…", 0, true, true);
 
             YoutubeDLResponse response = YoutubeDL.getInstance().execute(
                 request,
@@ -301,12 +355,11 @@ public class AudioDownloadPlugin extends Plugin {
                         if (last == null || now - last >= NOTIFY_MIN_INTERVAL_MS) {
                             lastNotifyAt.put(id, now);
                             boolean unknown = progress == null || progress < 0;
-                            postNotification(
+                            DownloadForegroundService.updateJob(
+                                getContext(),
                                 id,
-                                notifyTitle,
                                 unknown ? "Downloading…" : Math.round(progress) + "%",
                                 unknown ? 0 : Math.round(progress),
-                                true,
                                 unknown
                             );
                         }
@@ -315,35 +368,64 @@ public class AudioDownloadPlugin extends Plugin {
                 }
             );
 
-            String path = lastPathIn(response.getOut(), dir.getAbsolutePath());
+            java.util.List<String> paths = pathsIn(response.getOut(), dir.getAbsolutePath());
             lastNotifyAt.remove(id);
-            postNotification(id, notifyTitle, "Saved to your music folder", null, false, false);
+            // Released before the final notification is posted, so the
+            // ongoing progress row is gone by the time the "saved" one
+            // appears rather than sitting beside it.
+            DownloadForegroundService.stopJob(getContext(), id);
+            postNotification(
+                id,
+                notifyTitle,
+                paths.size() > 1
+                    ? paths.size() + " tracks saved to your music folder"
+                    : "Saved to your music folder");
 
             JSObject payload = new JSObject();
             payload.put("id", id);
-            payload.put("path", path);
+            // Kept for callers that only ever expected one file; `paths`
+            // is the real answer now that a playlist URL is one job and
+            // many files.
+            payload.put("path", paths.isEmpty() ? null : paths.get(paths.size() - 1));
+            JSArray all = new JSArray();
+            for (String p : paths) all.put(p);
+            payload.put("paths", all);
             notifyListeners(EVENT_DONE, payload);
         } catch (Exception e) {
             lastNotifyAt.remove(id);
+            DownloadForegroundService.stopJob(getContext(), id);
             String message = describe(e);
-            postNotification(id, "Download failed", message, null, false, false);
+            postNotification(id, "Download failed", message);
             fail(id, message);
         }
     }
 
-    // Picks the "after_move:filepath" line out of yt-dlp's chatter. It is
-    // matched by the directory prefix rather than by position, because
-    // progress and postprocessor lines share the same stream; the last
-    // match wins, which is the finished file after any MP3 re-encode
-    // rather than the intermediate the encode consumed.
-    private String lastPathIn(String out, String dirPrefix) {
-        if (out == null) return null;
-        String found = null;
+    // Picks the "after_move:filepath" lines out of yt-dlp's chatter. They
+    // are matched by the directory prefix rather than by position,
+    // because progress and postprocessor lines share the same stream.
+    // One line per finished file — a playlist URL is a single job that
+    // produces a whole album's worth, which is exactly the case the
+    // arrival review exists for. Duplicates are dropped because a
+    // re-encode prints the intermediate and the final file under the
+    // same name.
+    private java.util.List<String> pathsIn(String out, String dirPrefix) {
+        java.util.List<String> found = new java.util.ArrayList<>();
+        if (out == null) return found;
         for (String line : out.split("\n")) {
             String trimmed = line.trim();
-            if (trimmed.startsWith(dirPrefix)) found = trimmed;
+            if (trimmed.startsWith(dirPrefix) && !found.contains(trimmed)) found.add(trimmed);
         }
         return found;
+    }
+
+    // Whether this link names a playlist rather than one video. Matches
+    // both the "?list=" form (a video opened from inside a playlist, and
+    // what the share sheet hands over most often) and the bare
+    // /playlist?list= page.
+    private boolean isPlaylistUrl(String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase();
+        return lower.contains("list=") || lower.contains("/playlist");
     }
 
     // Strips what a filename can't carry (and the % that would be read
@@ -353,6 +435,137 @@ public class AudioDownloadPlugin extends Plugin {
         String cleaned = name.replaceAll("[/\\\\:*?\"<>|%]", "_").trim();
         if (cleaned.length() > 150) cleaned = cleaned.substring(0, 150).trim();
         return cleaned.isEmpty() ? "download" : cleaned;
+    }
+
+    // The "it's done, come and look" notification, posted by the JS side
+    // once every download in a batch has settled and only when uPod
+    // isn't already in front of the user (in-app, an animated card does
+    // this job instead — see DownloadArrivalToast.jsx).
+    //
+    // Deliberately richer than the progress notifications: a title that
+    // names what arrived, an expanded line listing the tracks, and a
+    // "Sort them out" action, because the whole point is that tapping it
+    // lands in the review sheet rather than just opening the app.
+    @PluginMethod
+    public void notifyBatchComplete(PluginCall call) {
+        final String title = call.getString("title", "Downloads finished");
+        final String text = call.getString("text", "Tap to sort them into your library");
+        final JSArray lines = call.getArray("lines");
+        final JSArray jobIds = call.getArray("jobIds");
+
+        try {
+            // The per-job "Saved" notifications are the fallback for a
+            // batch the web layer never got to summarise. Once it has,
+            // they're noise sitting under a better notification.
+            if (jobIds != null) {
+                for (int i = 0; i < jobIds.length(); i++) {
+                    String jobId = jobIds.optString(i, null);
+                    if (jobId != null) {
+                        NotificationManagerCompat.from(getContext()).cancel(notificationIdFor(jobId));
+                    }
+                }
+            }
+
+            ensureChannel();
+
+            Intent open = new Intent(getContext(), MainActivity.class);
+            open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            open.putExtra(EXTRA_OPEN_REVIEW, true);
+            // A request code of its own, so this PendingIntent and the
+            // plain "open uPod" one from the progress notifications
+            // don't overwrite each other's extras under
+            // FLAG_UPDATE_CURRENT.
+            PendingIntent tap = PendingIntent.getActivity(
+                getContext(), 1, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+            NotificationCompat.Builder builder = new NotificationCompat.Builder(getContext(), CHANNEL_DONE_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setContentIntent(tap)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .setColorized(true)
+                .addAction(android.R.drawable.ic_menu_edit, "Sort them out", tap);
+
+            if (lines != null && lines.length() > 0) {
+                NotificationCompat.InboxStyle style = new NotificationCompat.InboxStyle().setBigContentTitle(title);
+                // Android stops drawing InboxStyle rows past six or so;
+                // the rest are summarised rather than silently dropped.
+                int shown = Math.min(lines.length(), 5);
+                for (int i = 0; i < shown; i++) {
+                    String line = lines.optString(i, null);
+                    if (line != null) style.addLine(line);
+                }
+                if (lines.length() > shown) {
+                    style.setSummaryText("+" + (lines.length() - shown) + " more");
+                }
+                builder.setStyle(style);
+            }
+
+            NotificationManagerCompat.from(getContext()).notify(SUMMARY_NOTIFICATION_ID, builder.build());
+        } catch (SecurityException ignored) {
+            // POST_NOTIFICATIONS not granted — the review is still
+            // waiting inside the app, so this is not worth rejecting.
+        }
+        call.resolve();
+    }
+
+    // Used when the batch finished with uPod in the foreground: the
+    // in-app card is about to say all this, so the shade shouldn't also
+    // be carrying stale "Saving audio" rows.
+    @PluginMethod
+    public void clearNotifications(PluginCall call) {
+        JSArray jobIds = call.getArray("jobIds");
+        NotificationManagerCompat manager = NotificationManagerCompat.from(getContext());
+        if (jobIds != null) {
+            for (int i = 0; i < jobIds.length(); i++) {
+                String jobId = jobIds.optString(i, null);
+                if (jobId != null) manager.cancel(notificationIdFor(jobId));
+            }
+        }
+        manager.cancel(SUMMARY_NOTIFICATION_ID);
+        call.resolve();
+    }
+
+    // Cold-start half of the notification tap: the activity was created
+    // by the intent long before the web layer existed, so the flag is
+    // parked until JS comes asking. Reading it clears it — a review is
+    // opened once per tap, not on every reload afterwards.
+    @PluginMethod
+    public void getPendingReview(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("pending", pendingReview);
+        pendingReview = false;
+        call.resolve(ret);
+    }
+
+    @Override
+    public void load() {
+        if (getActivity() != null) consumeReviewIntent(getActivity().getIntent(), false);
+    }
+
+    // Warm path: uPod was already running (possibly in the background)
+    // when the notification was tapped, so the web layer is live and can
+    // be told directly.
+    @Override
+    protected void handleOnNewIntent(Intent intent) {
+        super.handleOnNewIntent(intent);
+        consumeReviewIntent(intent, true);
+    }
+
+    private void consumeReviewIntent(Intent intent, boolean deliverNow) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_OPEN_REVIEW, false)) return;
+        // Cleared off the intent itself too: Android hands the same
+        // intent back on every later resume, and a review that reopened
+        // every time the user returned to the app would be a trap.
+        intent.removeExtra(EXTRA_OPEN_REVIEW);
+        if (deliverNow) {
+            notifyListeners(EVENT_REVIEW, new JSObject());
+        } else {
+            pendingReview = true;
+        }
     }
 
     private void fail(String id, String message) {

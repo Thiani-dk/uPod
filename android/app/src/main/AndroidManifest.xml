@@ -35,6 +35,18 @@
             </intent-filter>
         </activity>
 
+        <!-- Keeps the process alive while yt-dlp works. An album is
+             minutes of downloading and the user is going to leave the
+             app, at which point a process with no visible activity is
+             the first thing Android reclaims. stopWithTask="false" so
+             swiping uPod out of Recents doesn't take a download with
+             it. See DownloadForegroundService.java. -->
+        <service
+            android:name=".DownloadForegroundService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -57,6 +69,13 @@
          explicitly here so it doesn't depend on library merge order. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- Android 14+ (API 34+) requires the type-specific permission for
+         every foregroundServiceType an app declares, exactly as above:
+         "dataSync" is the category a download the user asked for falls
+         under, and without this the promotion throws instead of
+         protecting the download. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- Android 13+ (API 33+): without this, the foreground service's
          notification above (and the lock-screen/notification-shade

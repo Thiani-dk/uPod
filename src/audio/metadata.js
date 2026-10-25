@@ -5,6 +5,7 @@
 // groups the resulting tracks into albums.
 import jsmediatags from "jsmediatags";
 import { readNativeTags } from "./nativeTagReader";
+import { parseOggTags, isOggFile, OGG_FIRST_READ_BYTES, OGG_SECOND_READ_BYTES } from "./oggTags";
 
 // "opus" is here because it is what a "Best available" YouTube download
 // actually produces — YouTube's highest free audio stream is Opus, and
@@ -69,7 +70,28 @@ export function gradientForAlbum(albumName) {
   return [`hsl(${hue1}, 70%, 55%)`, `hsl(${hue2}, 65%, 22%)`];
 }
 
-function readTagsFromFile(file) {
+async function readTagsFromFile(file) {
+  // Same gap as the native path, same fix — jsmediatags has no Ogg
+  // reader, so an .opus/.ogg picked through the browser folder picker
+  // would otherwise come back with nothing. See oggTags.js.
+  if (isOggFile(file.name)) {
+    try {
+      const front = new Uint8Array(
+        await file.slice(0, Math.min(OGG_FIRST_READ_BYTES, file.size)).arrayBuffer()
+      );
+      let parsed = parseOggTags(front);
+      if (parsed?.truncated && file.size > OGG_FIRST_READ_BYTES) {
+        const more = new Uint8Array(
+          await file.slice(0, Math.min(OGG_SECOND_READ_BYTES, file.size)).arrayBuffer()
+        );
+        parsed = parseOggTags(more) || parsed;
+      }
+      return parsed?.tags || {};
+    } catch {
+      return {};
+    }
+  }
+
   return new Promise((resolve) => {
     jsmediatags.read(file, {
       onSuccess: (tag) => resolve(tag.tags),
@@ -214,6 +236,14 @@ export async function parseLibrary(fileList) {
 //             trouble to type it, that's what they want to see — but
 //             deliberately not treated as identification, because nothing
 //             corroborates it.
+//   DOWNLOADED uPod fetched this file itself, from a link the user
+//             deliberately shared into the app. Nothing corroborates the
+//             tags, but the *file* is not a stray: the user asked for
+//             this exact thing by name. That is identification enough to
+//             count, which matters because a YouTube rip often arrives
+//             with a title and nothing else and would otherwise land as
+//             UNKNOWN — present in albums, invisible in the Tracks tab
+//             and in Play Now's "Recently Added".
 //   EMBEDDED  the file's own tags, and they're substantial enough to
 //             identify the track (see hasRealTags).
 //   UNKNOWN   nothing usable: no verified match, nothing declared, and
@@ -227,6 +257,7 @@ export async function parseLibrary(fileList) {
 export const METADATA_ORIGIN = {
   VERIFIED: "verified",
   DECLARED: "declared",
+  DOWNLOADED: "downloaded",
   EMBEDDED: "embedded",
   TRUSTED: "trusted",
   UNKNOWN: "unknown",
@@ -238,6 +269,7 @@ export const METADATA_ORIGIN = {
 export function resolveMetadataOrigin(track, declaredRecord, trustBaseline) {
   if (declaredRecord?.origin === METADATA_ORIGIN.VERIFIED) return METADATA_ORIGIN.VERIFIED;
   if (declaredRecord?.origin === METADATA_ORIGIN.DECLARED) return METADATA_ORIGIN.DECLARED;
+  if (declaredRecord?.origin === METADATA_ORIGIN.DOWNLOADED) return METADATA_ORIGIN.DOWNLOADED;
   if (trustBaseline?.has(track.id)) return METADATA_ORIGIN.TRUSTED;
   return track.hasRealTags ? METADATA_ORIGIN.EMBEDDED : METADATA_ORIGIN.UNKNOWN;
 }
@@ -260,6 +292,7 @@ export function applyStoredMetadata(track, declaredRecord, trustBaseline) {
   const original = track.metadataOriginal || {
     title: track.title,
     artist: track.artist,
+    albumArtist: track.albumArtist,
     album: track.album,
     year: track.year,
     hasAlbumTag: track.hasAlbumTag,
@@ -287,6 +320,12 @@ export function applyStoredMetadata(track, declaredRecord, trustBaseline) {
     metadataOriginal: original,
     title: f.title || original.title,
     artist: f.artist || original.artist,
+    // Separate from `artist` on purpose: this is what decides the name
+    // an album is filed under (see groupIntoAlbums), so a compilation
+    // can carry one album artist over tracks with twelve different
+    // performers — and naming the album's artist must not rewrite who
+    // actually sang each track.
+    albumArtist: f.albumArtist || original.albumArtist || f.artist || original.artist,
     album,
     albumKey: normalizeKey(album),
     hasAlbumTag: f.album ? true : original.hasAlbumTag,
@@ -323,6 +362,7 @@ const POOLED_ORIGINS = new Set([
   METADATA_ORIGIN.VERIFIED,
   METADATA_ORIGIN.EMBEDDED,
   METADATA_ORIGIN.TRUSTED,
+  METADATA_ORIGIN.DOWNLOADED,
 ]);
 
 export function isInGeneralPool(t) {

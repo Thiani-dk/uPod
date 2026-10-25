@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
 import { SplashScreen } from "@capacitor/splash-screen";
@@ -7,7 +7,16 @@ import "./styles/global.css";
 import { PlayerProvider, usePlayerState, usePlayerActions } from "./store/PlayerContext";
 import { consumeTopBackHandler } from "./utils/backHandlerStack";
 import { onSharedUrl } from "./utils/shareTarget";
-import { downloadAudio, newDownloadId, prepareEngine, searchYouTube } from "./download/audioDownload";
+import {
+  downloadAudio,
+  newDownloadId,
+  prepareEngine,
+  searchYouTube,
+  notifyDownloadsFinished,
+  clearDownloadNotifications,
+  onDownloadReviewRequest,
+} from "./download/audioDownload";
+import { addArrivals, loadPendingArrivals } from "./download/arrivals";
 import { isSpotifyUrl, resolveSpotifyTrack, pickBestMatch } from "./download/spotify";
 import { describeSource } from "./download/qualityPresets";
 import { BACKGROUND_PLAYBACK_GUIDANCE } from "./utils/backgroundPlaybackWatchdog";
@@ -20,6 +29,8 @@ import UndoSnackbar from "./components/UndoSnackbar";
 import ResumePromptModal from "./components/ResumePromptModal";
 import DownloadAudioModal from "./components/DownloadAudioModal";
 import DownloadDock from "./components/DownloadDock";
+import DownloadArrivalToast from "./components/DownloadArrivalToast";
+import DownloadReviewModal from "./components/DownloadReviewModal";
 import NowPlaying from "./screens/NowPlaying";
 import Library from "./screens/Library";
 import AlbumDetail from "./screens/AlbumDetail";
@@ -99,9 +110,18 @@ function warmImage(url, timeout) {
 }
 
 function Shell() {
-  const { theme, accentColor, artDim, fontFamily, queue, queueIndex, albums, backgroundKillNotice, newMusicFound, loadingLibrary, libraryHydrating, resumePrompt, classicMode, miniPlayerHidden } =
+  const { theme, accentColor, artDim, fontFamily, queue, queueIndex, albums, library, backgroundKillNotice, newMusicFound, loadingLibrary, libraryHydrating, resumePrompt, classicMode, miniPlayerHidden, pendingArrivals } =
     usePlayerState();
-  const { dismissBackgroundKillNotice, initializeLibrary, dismissNewMusicFound, pickNativeFolder, checkForNewMusic } = usePlayerActions();
+  const {
+    dismissBackgroundKillNotice,
+    initializeLibrary,
+    dismissNewMusicFound,
+    pickNativeFolder,
+    checkForNewMusic,
+    ingestDownloadedFiles,
+    setPendingArrivals,
+    clearArrivals,
+  } = usePlayerActions();
   // null while checking (avoids a flash of the wrong screen), then true
   // only on a fresh install/reinstall where "All files access" hasn't
   // been granted yet — see WelcomeOnboarding.jsx for why this can't just
@@ -199,16 +219,124 @@ function Shell() {
   const patchDownload = (id, patch) =>
     setDownloads((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
 
+  // Files finished since the last batch was wrapped up, and the job ids
+  // that produced them. A ref rather than state because finalizeBatch
+  // reads it from inside an event handler that was created on an older
+  // render — and because changing it must never cause a re-render on its
+  // own, these are only ever read at the moment a batch settles.
+  const batchRef = useRef({ paths: [], jobIds: [], finalizing: false });
+  // The review sheet, opened either from the arrival card or from a tap
+  // on the notification.
+  const [reviewOpen, setReviewOpen] = useState(false);
+
+  // One job can be one file or a whole album: a shared playlist URL is a
+  // single yt-dlp invocation that writes a track per entry, which is
+  // exactly the case the review exists for. See pathsIn() in
+  // AudioDownloadPlugin.java.
+  function pathsFromDoneEvent(ev) {
+    if (Array.isArray(ev?.paths) && ev.paths.length) return ev.paths;
+    return ev?.path ? [ev.path] : [];
+  }
+
+  // Called when nothing is downloading any more. Reads the just-saved
+  // files into the library (no full rescan — see ingestDownloadedFiles),
+  // then announces them exactly once: an in-app card if uPod is in
+  // front of the user, a notification in the shade if it isn't.
+  async function finalizeBatch() {
+    const batch = batchRef.current;
+    if (batch.finalizing || batch.paths.length === 0) return;
+    batch.finalizing = true;
+    const paths = batch.paths;
+    const jobIds = batch.jobIds;
+    batchRef.current = { paths: [], jobIds: [], finalizing: false };
+
+    // Persisted before anything else can fail: from here on the batch is
+    // something the user is owed an answer about, and that has to
+    // survive the process being killed between the download and the tap
+    // on the notification.
+    await addArrivals({ paths, sourceUrl: sharedUrlRef.current });
+
+    let tracks = [];
+    try {
+      tracks = await ingestDownloadedFiles(paths);
+    } catch (err) {
+      console.warn("Couldn't read the downloaded files into the library:", err);
+    }
+
+    if (tracks.length === 0) {
+      // Nothing could be read — a file saved outside the music folder,
+      // or permission lost mid-flight. Fall back to the folder re-walk
+      // that notices files added over USB, so the tracks at least
+      // surface through the "found new files" banner.
+      checkForNewMusic();
+      return;
+    }
+
+    setPendingArrivals({ trackIds: tracks.map((t) => t.id), at: Date.now() });
+
+    // A settled batch has been accounted for; leaving its "Saved" rows
+    // in the dock under a card that says the same thing is clutter.
+    setDownloads((prev) => prev.filter((d) => d.status !== "done"));
+
+    const active = await appIsActive();
+    if (active) {
+      // The card below is about to say all of this; the shade shouldn't
+      // also be carrying "Saving audio" rows for work that is over.
+      clearDownloadNotifications(jobIds);
+    } else {
+      notifyDownloadsFinished({
+        title: tracks.length === 1 ? "1 track downloaded" : `${tracks.length} tracks downloaded`,
+        text: "Tap to name them and bundle them into an album",
+        lines: tracks.map((t) => `${t.title} — ${t.artist}`),
+        jobIds,
+      });
+    }
+  }
+
+  // Whether uPod is the app on screen right now. getState() is the only
+  // honest answer: the web layer keeps running while backgrounded, so a
+  // download finishing in a pocket reaches this code exactly the same
+  // way one finishing in the foreground does.
+  async function appIsActive() {
+    if (!Capacitor.isNativePlatform()) return true;
+    try {
+      const { isActive } = await CapacitorApp.getState();
+      return isActive;
+    } catch {
+      return true;
+    }
+  }
+
+  // The last link shared in, kept past the point where sharedUrl is
+  // cleared (the sheet closes as soon as a quality is picked) so a
+  // finished batch can still record where it came from.
+  const sharedUrlRef = useRef(null);
+
+  // Job ids that haven't settled yet. A batch is "everything that was in
+  // flight at once", so three links shared back-to-back produce one
+  // review rather than three sheets — and the count has to be tracked
+  // here rather than read off `downloads`, because setDownloads is
+  // asynchronous and the row that just finished would still read as
+  // running from inside its own event handler.
+  const liveJobsRef = useRef(new Set());
+
+  function settleJob(id) {
+    liveJobsRef.current.delete(id);
+    if (liveJobsRef.current.size === 0) finalizeBatch();
+  }
+
   const downloadHandlers = {
     onProgress: (ev) => patchDownload(ev.id, { percent: ev.percent, etaSeconds: ev.etaSeconds }),
     onDone: (ev) => {
       patchDownload(ev.id, { status: "done", percent: 100 });
-      // Reuses the folder re-walk that already notices files added over
-      // USB, so the new track surfaces through the same "found new
-      // files" banner instead of a second, parallel mechanism.
-      checkForNewMusic();
+      batchRef.current.paths.push(...pathsFromDoneEvent(ev));
+      if (!batchRef.current.jobIds.includes(ev.id)) batchRef.current.jobIds.push(ev.id);
+      settleJob(ev.id);
     },
-    onFailed: (ev) => patchDownload(ev.id, { status: "failed", message: ev.message }),
+    onFailed: (ev) => {
+      patchDownload(ev.id, { status: "failed", message: ev.message });
+      settleJob(ev.id);
+    },
   };
 
   async function startDownload(url, preset, track) {
@@ -218,6 +346,8 @@ function Shell() {
     // "Downloading…" would not be.
     const label = track ? `${track.artist} · ${track.title}` : `${describeSource(url)} · ${preset.label}`;
     const id = newDownloadId();
+    liveJobsRef.current.add(id);
+    sharedUrlRef.current = url;
     // On screen before the job is queued — see newDownloadId().
     setDownloads((prev) => [
       { id, label, status: track ? "searching" : "running", percent: null, etaSeconds: null },
@@ -240,6 +370,7 @@ function Shell() {
             status: "failed",
             message: "No close enough match on YouTube — nothing within a few seconds of the Spotify version.",
           });
+          settleJob(id);
           return;
         }
         target = `https://www.youtube.com/watch?v=${best.id}`;
@@ -250,10 +381,66 @@ function Shell() {
       await downloadAudio(id, target, preset, downloadHandlers, { outputName });
     } catch (err) {
       patchDownload(id, { status: "failed", message: err?.message || "Couldn't start the download." });
+      settleJob(id);
     }
   }
 
   const dismissDownload = (id) => setDownloads((prev) => prev.filter((d) => d.id !== id));
+
+  // The tracks the review is about, resolved fresh from the library so
+  // the sheet shows (and saves over) current values rather than a
+  // snapshot taken when the download finished.
+  const arrivalTracks = useMemo(() => {
+    if (!pendingArrivals?.trackIds?.length) return [];
+    const byId = new Map(library.map((t) => [t.id, t]));
+    return pendingArrivals.trackIds.map((id) => byId.get(id)).filter(Boolean);
+  }, [pendingArrivals, library]);
+
+  // A tap on the "downloads finished" notification, whether it launched
+  // uPod or just brought it forward. The arrivals it refers to are
+  // picked up by the effect below — this only says which way the user
+  // came in, and therefore that the sheet should open rather than the
+  // card.
+  useEffect(
+    () =>
+      onDownloadReviewRequest(() => {
+        setReviewOpen(true);
+        clearDownloadNotifications([]);
+      }),
+    []
+  );
+
+  // Arrivals that outlived the process that downloaded them: the batch
+  // finished, the notification was posted, and uPod was killed (or
+  // simply never opened) before anyone answered it. The paths are on
+  // disk in Preferences; the tracks themselves are already in the
+  // cached library by now, so this just has to find them again.
+  //
+  // Waits for hydration, because before that the library is empty and
+  // every arrival would resolve to nothing.
+  const arrivalsRestoredRef = useRef(false);
+  useEffect(() => {
+    if (libraryHydrating || arrivalsRestoredRef.current || pendingArrivals) return;
+    arrivalsRestoredRef.current = true;
+    (async () => {
+      const pending = await loadPendingArrivals();
+      if (!pending?.paths?.length) return;
+      // Matched on path rather than on track id, because an id also
+      // carries the file's size and mtime — recomputing those would
+      // mean stat'ing every file again, when the absolute path that was
+      // persisted already ends in exactly the folder-relative path the
+      // library stores.
+      const tracks = library.filter(
+        (t) => t.relativePath && pending.paths.some((abs) => abs.endsWith(`/${t.relativePath}`))
+      );
+      if (tracks.length === 0) return;
+      setPendingArrivals({ trackIds: tracks.map((t) => t.id), at: pending.at });
+      // They've opened the app and the card is about to appear, so the
+      // notification that was trying to get them here has done its job.
+      clearDownloadNotifications([]);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [libraryHydrating]);
 
   // One-time check on mount — PlayerContext's own launch effect already
   // bails out silently if storage permission isn't granted (see
@@ -517,12 +704,42 @@ function Shell() {
             onDismiss={dismissDownload}
             aboveMiniPlayer={screen !== "nowplaying" && !!queue[queueIndex] && !resumePrompt && !miniPlayerHidden}
           />
+          {/* Sits where the dock's cards do and for the same reason: it
+              is what those cards turn into once the disc stops
+              spinning. Suppressed while the sheet it opens is already
+              up. */}
+          {arrivalTracks.length > 0 && !reviewOpen && (
+            <div className={`arrival-toast-layer ${screen !== "nowplaying" && !!queue[queueIndex] && !resumePrompt && !miniPlayerHidden ? "above-mini-player" : ""}`}>
+              <DownloadArrivalToast
+                tracks={arrivalTracks}
+                onReview={() => setReviewOpen(true)}
+                onDismiss={() => {
+                  clearArrivals();
+                  clearDownloadNotifications([]);
+                }}
+              />
+            </div>
+          )}
           {screen !== "nowplaying" && <MiniPlayer onOpen={() => setScreen("nowplaying")} />}
           {/* Both sit at Shell level on purpose: the undo has to outlive
               the screen that did the deleting, and the resume prompt can
               land on whatever screen the app happened to be left on. */}
           <UndoSnackbar />
           {resumePrompt && <ResumePromptModal prompt={resumePrompt} />}
+          {reviewOpen && arrivalTracks.length > 0 && (
+            <DownloadReviewModal
+              tracks={arrivalTracks}
+              playlist={pendingArrivals?.playlist || null}
+              // Either answer retires the batch: "leave as is" is a
+              // decision about it, not a postponement, and the tracks
+              // are already in the library either way.
+              onDone={() => {
+                setReviewOpen(false);
+                clearArrivals();
+                clearDownloadNotifications([]);
+              }}
+            />
+          )}
           {sharedUrl && (
             <DownloadAudioModal
               url={sharedUrl}

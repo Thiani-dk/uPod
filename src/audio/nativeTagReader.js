@@ -27,6 +27,7 @@ import { Filesystem } from "@capacitor/filesystem";
 import MediaFileReader from "jsmediatags/build2/MediaFileReader";
 import ChunkedFileData from "jsmediatags/build2/ChunkedFileData";
 import jsmediatags from "jsmediatags";
+import { parseOggTags, isOggFile, OGG_FIRST_READ_BYTES, OGG_SECOND_READ_BYTES } from "./oggTags";
 
 function base64ToUint8Array(base64) {
   const chars = atob(base64);
@@ -74,10 +75,33 @@ class NativeRangeFileReader extends MediaFileReader {
   }
 }
 
+// Ogg has no jsmediatags reader, so it is handled before jsmediatags is
+// ever asked — see oggTags.js for why that gap mattered so much.
+//
+// Two reads at most, and usually one: a comment header without cover art
+// is a couple of kilobytes, so the small read almost always has all of
+// it, and only a file that says it was cut short pays for the large one.
+async function readOggTagsNatively({ path, directory, size }) {
+  const readFront = async (want) => {
+    const length = Math.min(want, size || want);
+    const result = await Filesystem.readFile({ path, directory, offset: 0, length });
+    return base64ToUint8Array(result.data);
+  };
+
+  let parsed = parseOggTags(await readFront(OGG_FIRST_READ_BYTES));
+  if (parsed?.truncated && (!size || size > OGG_FIRST_READ_BYTES)) {
+    parsed = parseOggTags(await readFront(OGG_SECOND_READ_BYTES)) || parsed;
+  }
+  return parsed?.tags || {};
+}
+
 // Resolves to `{}` (rather than rejecting) on any failure, matching
 // metadata.js's existing readTagsFromFile() behaviour for browser File
 // objects, so a single unreadable/corrupt track can't abort a whole scan.
 export function readNativeTags({ path, directory, size }) {
+  if (isOggFile(path)) {
+    return readOggTagsNatively({ path, directory, size }).catch(() => ({}));
+  }
   return new Promise((resolve) => {
     new jsmediatags.Reader({ path, directory, size })
       .setFileReader(NativeRangeFileReader)

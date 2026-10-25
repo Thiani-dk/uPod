@@ -17,6 +17,8 @@ import {
   getMusicFolderPath,
   hasConfirmedFolderOnce,
   markFolderConfirmedOnce,
+  scanNativePaths,
+  relativePathFromAbsolute,
 } from "../audio/nativeFolder";
 import {
   loadLibrary as loadCachedLibrary,
@@ -42,6 +44,7 @@ import {
   clearUnplayableMarkers,
   forgetTracks,
 } from "../audio/libraryCache";
+import { clearPendingArrivals } from "../download/arrivals";
 import { startLyricsSweep, cancelLyricsSweep } from "../online/lyricsPrefetch";
 import { fetchCoverArt } from "../online/coverArt";
 import { AudioEngine, EQ_PRESETS, EQ_FREQUENCIES } from "../audio/engine";
@@ -241,6 +244,13 @@ const initialState = {
   // can't be played never appears in a list to be tapped again. A Set,
   // empty until it's been loaded.
   unplayableIds: new Set(),
+  // Music that uPod downloaded itself and the user hasn't sorted yet:
+  // { trackIds, playlist, sourceUrl, at }, or null. Set once the files
+  // have been read into the library (see ingestDownloadedFiles), and
+  // cleared when the review sheet is finished with or skipped. Survives
+  // a relaunch via download/arrivals.js — the tap on the notification
+  // can come long after the process that did the downloading died.
+  pendingArrivals: null,
   // { total, found, pending, done, running } for the background lyrics
   // sweep (see online/lyricsPrefetch.js), or null before it has reported
   // anything. Purely informational — Settings renders it.
@@ -705,6 +715,17 @@ function reducer(state, action) {
       );
       return { ...state, trackMetadata, library, albums: groupIntoAlbums(library) };
     }
+    // Several records at once. The single-track case above rebuilds the
+    // album grouping on every call, which is right for one hand-edit and
+    // wrong for a dozen records written in a loop at launch — that cost
+    // lands on the main thread while the splash is still up.
+    case "SET_TRACK_METADATA_BULK": {
+      const trackMetadata = { ...state.trackMetadata, ...action.records };
+      const library = state.library.map((t) =>
+        action.records[t.id] ? applyStoredMetadata(t, trackMetadata[t.id], state.trustBaseline) : t
+      );
+      return { ...state, trackMetadata, library, albums: groupIntoAlbums(library) };
+    }
     case "SET_COVER_OVERRIDES": {
       const coverOverrides = action.overrides;
       const library = applyCoverOverrides(state.library, coverOverrides);
@@ -757,6 +778,42 @@ function reducer(state, action) {
     // worse than no row.
     case "PRUNE_TRACKS":
       return withoutTracks(state, new Set(action.trackIds));
+    // Tracks read straight off disk without a full rescan — what a
+    // finished download produces (see ingestDownloadedFiles). Merged
+    // rather than replacing, and keyed by id so re-ingesting the same
+    // file is a no-op instead of a duplicate row. Everything a
+    // LOAD_LIBRARY would apply to a freshly-scanned track is applied
+    // here too, or a download would arrive ignoring the user's own
+    // metadata and covers.
+    case "ADD_SCANNED_TRACKS": {
+      const fresh = action.tracks.filter((t) => !state.unplayableIds.has(t.id));
+      const known = new Set(state.library.map((t) => t.id));
+      const added = applyCoverOverrides(
+        applyTrackMetadata(fresh.filter((t) => !known.has(t.id)), state.trackMetadata, state.trustBaseline),
+        state.coverOverrides
+      );
+      if (added.length === 0) return state;
+      const library = [...state.library, ...added];
+      return { ...state, library, albums: groupIntoAlbums(library) };
+    }
+    // Merged rather than replaced, because two batches can finish
+    // before either is reviewed — a second download landing while the
+    // first one's card is still on screen must not quietly drop the
+    // first one's tracks out of the review. (Mirrors addArrivals in
+    // download/arrivals.js, which merges the persisted side the same
+    // way.) Null always means "nothing pending": that's the clear.
+    case "SET_PENDING_ARRIVALS": {
+      const incoming = action.arrivals;
+      if (!incoming || !state.pendingArrivals) return { ...state, pendingArrivals: incoming };
+      return {
+        ...state,
+        pendingArrivals: {
+          ...state.pendingArrivals,
+          ...incoming,
+          trackIds: [...new Set([...state.pendingArrivals.trackIds, ...incoming.trackIds])],
+        },
+      };
+    }
     case "SET_UNPLAYABLE_IDS":
       return { ...state, unplayableIds: action.ids };
     case "MARK_UNPLAYABLE": {
@@ -1689,6 +1746,110 @@ export function PlayerProvider({ children }) {
     dispatch({ type: "SET_TRACK_METADATA", trackId, record: null });
   }, []);
 
+  // What a finished download does to the library, instead of the "found
+  // new files — rescan?" banner it used to raise.
+  //
+  // The banner was right for files that appeared over USB (uPod has no
+  // idea what they are or when they landed), but wrong here: uPod wrote
+  // these files itself and knows their exact paths, so making the user
+  // sit through a full tag-parsing rescan of the whole folder to see
+  // three tracks it just saved was work for nothing. This reads only
+  // those files and merges them in, which is near-instant.
+  //
+  // Every ingested track also gets a DOWNLOADED metadata record. That is
+  // the fix for downloads landing in albums but not in the Tracks tab or
+  // Play Now's "Recently Added": a YouTube rip frequently carries a
+  // title and nothing else, which scores as UNKNOWN and is held out of
+  // the general pool as an unidentifiable stray. A file the user went
+  // and fetched on purpose isn't a stray. See METADATA_ORIGIN.
+  const ingestDownloadedFiles = useCallback(async (absolutePaths) => {
+    if (!Capacitor.isNativePlatform() || !absolutePaths?.length) return [];
+
+    const folderPath = await getMusicFolderPath();
+    const relativePaths = absolutePaths
+      .map((p) => relativePathFromAbsolute(p, folderPath))
+      .filter(Boolean);
+    if (relativePaths.length === 0) return [];
+
+    const { tracks } = await scanNativePaths(relativePaths);
+    if (tracks.length === 0) return [];
+
+    // Written before the dispatch so the reducer's applyTrackMetadata
+    // pass sees them — otherwise the tracks land UNKNOWN and only
+    // correct themselves on the next launch.
+    const records = {};
+    for (const track of tracks) {
+      const record = { origin: METADATA_ORIGIN.DOWNLOADED, fields: null, source: null };
+      records[track.id] = record;
+      await persistTrackMetadata(track.id, record);
+      dispatch({ type: "SET_TRACK_METADATA", trackId: track.id, record });
+    }
+    dispatch({ type: "ADD_SCANNED_TRACKS", tracks });
+
+    // The cache has to learn about them too, or they vanish on the next
+    // launch until something triggers a real rescan.
+    const merged = [...libraryRef.current];
+    const known = new Set(merged.map((t) => t.id));
+    for (const t of tracks) if (!known.has(t.id)) merged.push(t);
+    saveCachedLibrary({ tracks: merged, folderPath: selectedFolderRef.current || folderPath }).catch((err) => {
+      console.warn("Couldn't persist the library after a download:", err);
+    });
+
+    return tracks;
+  }, []);
+
+  // Retroactive half of the same fix, for downloads that landed before
+  // any of this existed.
+  //
+  // uPod's downloader names every file "<title> [<video id>].<ext>" (see
+  // the -o template in AudioDownloadPlugin.java), and an 11-character
+  // YouTube id in trailing brackets is not something a file acquires by
+  // accident — it is evidence, not a guess, that this file came off
+  // YouTube through a yt-dlp. Those tracks are given the same
+  // DOWNLOADED origin a fresh arrival gets, which is what puts them
+  // back in the Tracks tab and in Play Now's "Recently Added" instead
+  // of leaving them visible only as albums of one.
+  //
+  // Only ever fills a gap: a track that already carries a record of any
+  // kind (verified match, the user's own words) is left exactly as it
+  // is.
+  const backfillDownloadedOrigins = useCallback(async (tracks, trackMetadata) => {
+    const YTDLP_NAMED = /\[[A-Za-z0-9_-]{11}\]\.[A-Za-z0-9]+$/;
+    const candidates = tracks.filter(
+      (t) => t.relativePath && YTDLP_NAMED.test(t.relativePath) && !trackMetadata[t.id]
+    );
+    if (candidates.length === 0) return;
+    const record = { origin: METADATA_ORIGIN.DOWNLOADED, fields: null, source: null };
+    const records = {};
+    for (const track of candidates) records[track.id] = record;
+    await Promise.all(candidates.map((t) => persistTrackMetadata(t.id, record)));
+    dispatch({ type: "SET_TRACK_METADATA_BULK", records });
+    console.log(`[upod] recognised ${candidates.length} previously downloaded track(s)`);
+  }, []);
+
+  // Puts the arrival review on screen (and keeps it across a relaunch).
+  const setPendingArrivals = useCallback((arrivals) => {
+    dispatch({ type: "SET_PENDING_ARRIVALS", arrivals });
+  }, []);
+
+  // "Sorted" or "leave them alone" — either way the batch stops being
+  // pending, in state and on disk.
+  const clearArrivals = useCallback(() => {
+    dispatch({ type: "SET_PENDING_ARRIVALS", arrivals: null });
+    clearPendingArrivals().catch(() => {});
+  }, []);
+
+  // The arrival review's commit path. Deliberately not declareTrackMetadata:
+  // a declaration over an unidentifiable file is display-only and stays
+  // out of the general pool (see isInGeneralPool), which for a track the
+  // user just downloaded *and* then named by hand would be exactly
+  // backwards. The origin stays DOWNLOADED and carries the user's fields.
+  const describeDownloadedTrack = useCallback(async (trackId, fields) => {
+    const record = { origin: METADATA_ORIGIN.DOWNLOADED, fields, source: null };
+    await persistTrackMetadata(trackId, record);
+    dispatch({ type: "SET_TRACK_METADATA", trackId, record });
+  }, []);
+
   // Hydrates straight from the IndexedDB cache when there's one — no
   // filesystem scanning at all in that case. A real scan only happens if
   // there's no cache yet: either a first-ever run (surfaced via
@@ -1800,6 +1961,28 @@ export function PlayerProvider({ children }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickNativeFolder, checkForNewMusic]);
+
+  // Runs once per launch, after the library is actually there — from
+  // the cache or from a scan, whichever got there first. Deliberately
+  // not inside initializeLibrary: the scan path dispatches LOAD_LIBRARY
+  // from pickNativeFolder, well after that function has returned.
+  const backfilledRef = useRef(false);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    if (backfilledRef.current || state.libraryHydrating || state.library.length === 0) return;
+    backfilledRef.current = true;
+    // Held back past the launch for the same reason the lyrics sweep is:
+    // nothing about recognising an old download is urgent, and the
+    // splash is still up competing for the same main thread. Long
+    // enough to be clear of SPLASH_MIN_MS and the cover warm-up.
+    const t = setTimeout(() => {
+      backfillDownloadedOrigins(state.library, state.trackMetadata).catch((err) => {
+        console.warn("Couldn't mark previously downloaded tracks:", err);
+      });
+    }, 2500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.libraryHydrating, state.library.length]);
 
   // Appearance settings (theme/button pack/font), restored on cold launch.
   // Deliberately its own mount effect rather than a step inside
@@ -2227,6 +2410,10 @@ export function PlayerProvider({ children }) {
     clearTrackMetadataRecord,
     declareTrackMetadata,
     commitCleanerResult,
+    ingestDownloadedFiles,
+    setPendingArrivals,
+    clearArrivals,
+    describeDownloadedTrack,
     // Called by WelcomeOnboarding once the user grants storage access and
     // returns to the app — kicks off the exact same hydrate-or-scan flow
     // the mount effect runs, which never got to on a fresh install/
@@ -2542,7 +2729,7 @@ export function PlayerProvider({ children }) {
     state.eqPreset, state.playlists, state.studioStatus, state.trackOrderStatus, state.queueToast,
     state.coverOverrides, state.backgroundKillNotice, state.newMusicFound, state.checkingForNewMusic,
     state.trackMetadata, state.trustBaseline, state.playlistUndo, state.resumePrompt,
-    state.miniPlayerHidden, state.unplayableIds, state.lyricsSweep,
+    state.miniPlayerHidden, state.unplayableIds, state.lyricsSweep, state.pendingArrivals,
   ]);
 
   return (

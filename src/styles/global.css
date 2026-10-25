@@ -3253,3 +3253,233 @@ button, input, select, textarea, optgroup {
 }
 .studio-result-title { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; }
 .studio-playlist-thumb { background: var(--accent-fill); }
+
+/* ---------- download arrivals: the card, and the sheet it opens ----------
+   The card is the end of the download dock's own story — the disc stops
+   spinning and this is what it becomes — so it deliberately shares the
+   dock's placement, radius and shadow language rather than inventing a
+   second visual vocabulary for the same event. */
+
+.arrival-toast-layer {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 17;
+}
+/* Clears the 58px mini player plus its 12px inset, same as .dl-dock. */
+.arrival-toast-layer.above-mini-player { bottom: 82px; }
+
+.arrival-toast {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 13px 14px;
+  border-radius: 18px;
+  /* The surface the download dock's cards already use, which is this
+     app's treatment for a panel floating over the content: the theme's
+     own solid overlay colour, not a tinted one of this card's
+     invention. Glass and Matte Obsidian both define it, so the card
+     belongs to whichever theme is on rather than carrying a look of
+     its own. */
+  background: var(--sidebar-solid);
+  border: 1px solid var(--sidebar-border-solid);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  animation: arrival-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes arrival-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Three sleeves part-way out of a crate: each steps back and over by
+   --i, which reads as depth without any 3D. */
+.arrival-stack {
+  position: relative;
+  width: 56px;
+  height: 46px;
+  flex-shrink: 0;
+}
+.arrival-stack-cover {
+  position: absolute;
+  top: calc(var(--i) * 3px);
+  left: calc(var(--i) * 8px);
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  border: 1px solid var(--sidebar-border-solid);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: calc(3 - var(--i));
+  animation: arrival-sleeve 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i) * 60ms + 80ms);
+}
+@keyframes arrival-sleeve {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Padding-right clears the close button, which is absolutely
+   positioned over this column's top-right corner. */
+.arrival-toast-body { flex: 1; min-width: 0; padding-right: 22px; }
+.arrival-toast-title { font-size: 13.5px; font-weight: 700; }
+.arrival-toast-sub {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.arrival-toast-actions { display: flex; gap: 8px; margin-top: 10px; }
+/* Both labels on one line each. The buttons inherit .primary-btn's
+   9px 16px padding, which on a narrow phone left them wrapping "Sort
+   them out" and "Leave as is" across two lines apiece and made the card
+   twice as tall as it needed to be. */
+.arrival-review-btn,
+.arrival-later-btn {
+  padding: 7px 13px;
+  font-size: 12px;
+  white-space: nowrap;
+  justify-content: center;
+}
+.arrival-toast-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: 0;
+  padding: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+/* ---------- the review sheet ---------- */
+
+.arrival-sheet {
+  display: flex;
+  flex-direction: column;
+  /* Capped so a twenty-track album scrolls inside the sheet instead of
+     pushing Save off the bottom of the screen. */
+  max-height: 86vh;
+}
+.arrival-sheet-scroll {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.arrival-cover-row { display: flex; gap: 13px; align-items: flex-start; margin-bottom: 16px; }
+.arrival-cover {
+  width: 78px;
+  height: 78px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+}
+.arrival-cover-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+.arrival-cover-title { font-size: 12.5px; font-weight: 700; }
+
+/* Three mutually exclusive answers, sized so all three fit one line on a
+   phone — a dropdown would hide two of them behind a tap. */
+.arrival-modes { display: flex; gap: 7px; margin-bottom: 7px; }
+.arrival-mode {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 10px 4px;
+  border-radius: 12px;
+  cursor: pointer;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+.arrival-mode:active { transform: scale(0.97); }
+.arrival-mode.is-active {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+/* "Existing album" is the long one — left to wrap it made that tile
+   two lines tall while its neighbours stayed at one. A third of a
+   narrow phone is about 90px of usable width, so the label is sized to
+   fit that on one line, and truncates rather than wraps if a future
+   label or a large system font pushes past it. */
+.arrival-mode-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.arrival-mode-hint { margin-bottom: 14px; }
+
+.arrival-album-form { margin-bottom: 14px; }
+.arrival-album-form select {
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.arrival-track-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
+.arrival-track {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.arrival-track-n {
+  width: 18px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+.arrival-track-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+/* Borderless until touched: a dozen boxed inputs in a row reads as a
+   form to be filled in, when what this actually is is a list you may
+   want to correct one line of. */
+.arrival-track-fields input {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  padding: 2px 0;
+  color: var(--text);
+  font-family: inherit;
+}
+.arrival-track-fields input:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+.arrival-track-title { font-size: 13px; font-weight: 600; }
+.arrival-track-artist { font-size: 11.5px; color: var(--text-dim); }
+
+.arrival-sheet-footer {
+  display: flex;
+  gap: 10px;
+  padding-top: 12px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.arrival-sheet-footer > * { flex: 1; justify-content: center; }

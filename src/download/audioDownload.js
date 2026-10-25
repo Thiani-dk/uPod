@@ -75,6 +75,56 @@ async function maybeAutoUpdate() {
   }
 }
 
+// The shade's half of "your download finished". Only called when uPod
+// isn't in front of the user — in-app the arrival card says it instead,
+// and two announcements of the same event is one too many. See
+// AudioDownloadPlugin.notifyBatchComplete for what it renders.
+export async function notifyDownloadsFinished({ title, text, lines, jobIds }) {
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    await AudioDownload.notifyBatchComplete({ title, text, lines: lines || [], jobIds: jobIds || [] });
+  } catch (err) {
+    console.warn("Couldn't post the downloads-finished notification:", err);
+  }
+}
+
+// Takes the batch's notifications out of the shade — either because the
+// app was in the foreground the whole time, or because the review they
+// point at has now been dealt with.
+export async function clearDownloadNotifications(jobIds) {
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    await AudioDownload.clearNotifications({ jobIds: jobIds || [] });
+  } catch {
+    /* nothing in the shade to clear, or no permission — either way fine */
+  }
+}
+
+// Fires when uPod was opened (cold or warm) by a tap on that
+// notification. Same two-path shape as onSharedUrl in utils/shareTarget.js
+// and for the same reason: a tap that launched the process happened
+// before any of this code existed, so it has to be collected rather than
+// listened for.
+export function onDownloadReviewRequest(handler) {
+  if (!Capacitor.isNativePlatform()) return () => {};
+
+  let live = true;
+  AudioDownload.getPendingReview()
+    .then((res) => {
+      if (live && res?.pending) handler();
+    })
+    .catch(() => {});
+
+  const sub = AudioDownload.addListener("reviewRequested", () => {
+    if (live) handler();
+  });
+
+  return () => {
+    live = false;
+    sub.then?.((s) => s.remove()) ?? sub.remove?.();
+  };
+}
+
 // Pulls a fresher yt-dlp than the one baked into the APK. YouTube breaks
 // extractors often enough that this is the first thing to try when
 // downloads start failing across the board.
