@@ -47,10 +47,11 @@ export default function QueueModal({ onClose }) {
           </button>
         </div>
 
-        {/* One action at each end: shuffling what's here on the left,
-            keeping it on the right. They read as a pair of opposites
-            that way, which is what they are. */}
-        <div className="queue-toolbar">
+        {/* Two equal halves: shuffling what's here on the left, keeping
+            it on the right. They read as a pair of opposites that way,
+            which is what they are. While a name is being typed the
+            halves give way so the field has room. */}
+        <div className={`queue-toolbar${savingAs ? " queue-toolbar-saving" : ""}`}>
           <button className="queue-action" onClick={reshuffleQueue} disabled={queue.length < 2}>
             <Shuffle size={13} /> Reshuffle
           </button>

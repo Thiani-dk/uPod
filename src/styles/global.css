@@ -1009,7 +1009,7 @@ button, input, select, textarea, optgroup {
 /* Very narrow phones: with favorite + add-to-playlist + overflow buttons
    now all visible on each track row, the artist subtitle is the first
    thing to give up its space so the title stays readable. */
-@media (max-width: 380px) {
+@media (max-width: 400px) {
   .track-row-text-artist { display: none; }
 }
 
@@ -1589,22 +1589,25 @@ button, input, select, textarea, optgroup {
   transform: translateY(-50%);
 }
 
-/* One action at each end. They were packed together on the left in a
-   wrapping row, which read as two buttons that hadn't been placed so
-   much as left where they landed. */
+/* A pair of equal columns rather than one action pinned at each end:
+   pushed apart, two pills of different widths sat lopsided against
+   the sheet's edges with a dead gap down the middle. Halves line up
+   with the rows below and with each other. */
 .queue-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 14px;
+  gap: 8px;
+  margin-bottom: 16px;
 }
 
 .queue-action {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 9px 15px;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 10px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
@@ -1635,13 +1638,24 @@ button, input, select, textarea, optgroup {
 
 /* Replaces the save button in place, so the row keeps its shape: the
    reshuffle button stays put on the left and the field grows into
-   whatever is left. */
+   whatever is left. Equal halves are right for two buttons but too
+   mean for a name field, so the columns give way while typing. */
+.queue-toolbar-saving {
+  grid-template-columns: auto 1fr;
+}
+
 .queue-save-as-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
   min-width: 0;
+}
+
+/* One pill per line once the halves get too narrow to hold their
+   labels — side by side they'd clip "Save as playlist". */
+@media (max-width: 400px) {
+  .queue-toolbar { grid-template-columns: 1fr; }
+  .queue-toolbar-saving { grid-template-columns: auto 1fr; }
 }
 
 .queue-save-as-row input {
