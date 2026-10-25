@@ -39,6 +39,26 @@ export function recordListen(trackId, seconds) {
   saveLog(log);
 }
 
+// Per-track listening history, folded out of the raw log: plays,
+// seconds and when it was last heard. computeLibraryStats below builds
+// the same thing for its own use; this is the shareable version, for
+// anything that needs to ask "how well does the user know this track?"
+// — the Instant Mix blend, for one.
+export function playStatsByTrack() {
+  const byTrack = new Map();
+  for (const ev of loadLog()) {
+    let entry = byTrack.get(ev.trackId);
+    if (!entry) {
+      entry = { count: 0, totalSeconds: 0, lastPlayedAt: 0 };
+      byTrack.set(ev.trackId, entry);
+    }
+    entry.count += 1;
+    entry.totalSeconds += ev.seconds;
+    entry.lastPlayedAt = Math.max(entry.lastPlayedAt, ev.ts);
+  }
+  return byTrack;
+}
+
 function isThisMonth(ts) {
   const d = new Date(ts);
   const now = new Date();

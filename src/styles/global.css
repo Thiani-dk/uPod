@@ -3921,7 +3921,27 @@ button, input, select, textarea, optgroup {
   100% { opacity: 0; transform: translate(calc(-50% + var(--drift) * 0.2), 92px) scale(0.45) rotate(calc(var(--spin) * 1.4)); }
 }
 
+/* A held note falls on a gentler curve than a struck one — it was
+   drawn out of the instrument rather than hit out of it. */
+.falling-note.is-sustain { animation-timing-function: cubic-bezier(0.3, 0, 0.5, 1); }
+
+/* The shiver, on its own element because one element can't both fall
+   and wobble — the two transforms would overwrite each other. Its rate
+   is the vibrato measured in the audio, so it only appears when the
+   music is actually trembling. */
+.falling-note-body {
+  display: block;
+  animation-name: note-shiver;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+@keyframes note-shiver {
+  0%, 100% { transform: translateX(calc(var(--wobble, 0px) * -1)) rotate(-3deg); }
+  50%      { transform: translateX(var(--wobble, 0px)) rotate(3deg); }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .falling-note-body,
   .skin-record,
   .cassette-reel,
   .skin-cd,
@@ -3930,4 +3950,127 @@ button, input, select, textarea, optgroup {
   .now-spinning.is-busy .skin-boombox,
   .now-spinning.is-playing .boombox-cone,
   .now-spinning.is-busy .boombox-cone { animation: none; }
+}
+
+/* ---------- Instant Mix, as a conversation ----------
+   Two speakers, so two surfaces: what the app says sits on the panel
+   colour like every other passage of text in the app, and what you
+   said sits on the accent, aligned right. Both themes get this free —
+   the colours are the theme's own. See InstantMix.jsx. */
+
+/* The transcript and the reply row both sit in the page's own scroll
+   (.content), rather than the transcript getting a scroller of its
+   own. A nested scroller would need this screen to have a definite
+   height, which it doesn't — .content is a plain scrolling block — and
+   a flex child asked to fill an auto-height parent collapses to
+   nothing. The conversation is only ever a handful of turns, so the
+   page scrolling is also simply the right behaviour. */
+.mix-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 6px 2px 14px;
+}
+
+.mix-bubble {
+  max-width: 82%;
+  padding: 10px 13px;
+  border-radius: 16px;
+  font-size: 13px;
+  line-height: 1.45;
+  animation: mix-bubble-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes mix-bubble-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.mix-bubble-bot {
+  align-self: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 5px;
+  color: var(--text);
+}
+.mix-bubble-you {
+  align-self: flex-end;
+  background: var(--accent-fill);
+  border: 1px solid transparent;
+  border-bottom-right-radius: 5px;
+  color: #fff;
+  font-weight: 600;
+}
+
+/* The three dots, for the moment it spends building. */
+.mix-typing { display: flex; gap: 4px; align-items: center; padding: 13px; }
+.mix-typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  animation: mix-typing-bounce 1.1s ease-in-out infinite;
+}
+.mix-typing span:nth-child(2) { animation-delay: 0.15s; }
+.mix-typing span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes mix-typing-bounce {
+  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
+  30%           { opacity: 1; transform: translateY(-3px); }
+}
+
+.mix-recipe-title { font-weight: 600; margin-bottom: 6px; }
+.mix-recipe { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+.mix-recipe li { font-size: 12.5px; }
+.mix-recipe b { color: var(--accent-text); }
+
+/* The reply row: only ever the answers to the question currently on
+   screen. */
+.mix-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--border);
+}
+
+.chip-reply {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  padding: 9px 14px;
+}
+.chip-sub {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-left: 6px;
+}
+.chip-reply.chip-active .chip-sub { color: inherit; opacity: 0.8; }
+
+.mix-filter { width: 100%; }
+.mix-filter input {
+  width: 100%;
+  padding: 10px 13px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+.mix-filter input:focus { outline: none; border-color: var(--accent); }
+
+/* The list of artists/albums to choose from. Capped and scrollable so
+   a 180-artist library doesn't push the conversation off screen. */
+.mix-options {
+  width: 100%;
+  /* This one can scroll internally because it has a definite height to
+     scroll within, unlike the transcript above. */
+  max-height: 34vh;
+  overflow-y: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 2px;
 }

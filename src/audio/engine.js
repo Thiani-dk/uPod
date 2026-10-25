@@ -89,9 +89,17 @@ export class AudioEngine {
     // through a sustained note and so marks the middle of a sound
     // rather than its start.
     let flux = 0;
+    // Spectral centroid: the magnitude-weighted average bin, i.e. where
+    // the middle of the sound sits. It is the closest cheap stand-in
+    // for "how high is this right now" — it rises with a voice going up
+    // and with a bright section, and falls into a bass-heavy one.
+    let weighted = 0;
+    let peak = 0;
     for (let i = 1; i < count; i++) {
       const v = bins[i];
       total += v;
+      weighted += v * i;
+      if (v > peak) peak = v;
       if (i < bassEnd) bass += v;
       else if (i >= trebleStart) treble += v;
       const rise = v - prev[i];
@@ -105,6 +113,10 @@ export class AudioEngine {
       bass: norm(bass, bassEnd - 1),
       treble: norm(treble, count - trebleStart),
       flux: norm(flux, count - 1),
+      // 0..1 across the spectrum rather than in Hz: every consumer of
+      // this wants "low or high for this track", not a frequency.
+      centroid: total > 0 ? weighted / total / count : 0,
+      peak: peak / 255,
     };
   }
 
