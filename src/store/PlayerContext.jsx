@@ -2396,6 +2396,13 @@ export function PlayerProvider({ children }) {
   );
 
   const actions = {
+    // A read-only window onto what is currently playing, for the
+    // visualiser on Play Now. Deliberately hands back numbers rather
+    // than the engine itself — nothing outside this file should be able
+    // to reach into the audio graph — and null when there is no graph
+    // yet (web build, or nothing has played since launch), so a caller
+    // can tell that apart from silence.
+    getAudioLevels: () => engineRef.current?.getLevels() || null,
     pickFolder,
     pickNativeFolder,
     checkForNewMusic,

@@ -3483,3 +3483,398 @@ button, input, select, textarea, optgroup {
   border-top: 1px solid var(--border);
 }
 .arrival-sheet-footer > * { flex: 1; justify-content: center; }
+
+/* ---------- Play Now's spinning player ----------
+   Four skins, all drawn here rather than shipped as images, so each one
+   picks up the playing track's extracted colour (--accent) and the
+   current theme without needing an asset per combination. See
+   NowSpinning.jsx for the tap gestures that drive them.
+
+   On colour: the record label, the cassette's spine, the CD's hub and
+   the boombox's cones all take --accent, which PlayerContext re-derives
+   from every cover as it starts playing — so the object on screen is
+   the colour of the song. Everything around that is theme-neutral
+   (--sidebar-solid / --sidebar-border-solid, defined by both Liquid
+   Glass and Matte Obsidian) or is a material colour a real object would
+   have anyway: vinyl is black and a CD is silver in any light. */
+
+.spin-to-mix { position: relative; }
+
+.now-spinning-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding-top: 6px;
+  margin-bottom: 16px;
+}
+
+.now-spinning {
+  position: relative;
+  width: 96px;
+  height: 78px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Taps are counted (single/double/triple), so the browser's own
+     double-tap-to-zoom would otherwise eat the second and third. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.now-spinning:active { transform: scale(0.96); }
+
+.now-spinning-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-height: 14px;
+  text-align: center;
+}
+
+/* Shared rotation. Slow at rest so the object reads as idling rather
+   than as a spinner claiming the app is busy; up to speed while music
+   plays; faster still during a folder walk. */
+@keyframes now-spin { to { transform: rotate(360deg); } }
+
+/* ---- record ---- */
+
+.skin-record {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    repeating-radial-gradient(
+      circle at 50% 50%,
+      rgba(255, 255, 255, 0.07) 0 1px,
+      transparent 1px 4px
+    ),
+    radial-gradient(circle at 32% 26%, rgba(255, 255, 255, 0.18), transparent 46%),
+    radial-gradient(circle at 50% 50%, #2b2b32 0%, #141418 72%, #0c0c0f 100%);
+  border: 1px solid var(--sidebar-border-solid);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34);
+  animation: now-spin 9s linear infinite;
+}
+.now-spinning.is-playing .skin-record { animation-duration: 3.2s; }
+.now-spinning.is-busy .skin-record { animation-duration: 1.1s; }
+
+.record-label {
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: var(--accent-fill);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.18),
+    /* The spindle hole, as a hole rather than a dot on top of the
+       label: a dark centre with the label's own colour ringing it. */
+    inset 0 0 0 11px var(--accent-fill),
+    inset 0 0 0 12px rgba(0, 0, 0, 0.45);
+}
+
+/* ---- cassette ---- */
+
+.skin-cassette {
+  position: relative;
+  width: 84px;
+  height: 54px;
+  border-radius: 7px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: linear-gradient(170deg, #3a3a42 0%, #25252b 55%, #1b1b20 100%);
+  border: 1px solid var(--sidebar-border-solid);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34);
+}
+/* The paper label across the top, in the song's colour. */
+.cassette-label {
+  height: 11px;
+  border-radius: 2px;
+  background: linear-gradient(
+    100deg,
+    var(--accent-fill) 0%,
+    color-mix(in srgb, var(--accent-fill) 55%, #e9e9ee) 100%
+  );
+  opacity: 0.92;
+}
+/* The window, with both reels and the tape running between them. */
+.cassette-window {
+  flex: 1;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px;
+  position: relative;
+  background: rgba(0, 0, 0, 0.42);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.cassette-reel {
+  position: relative;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  /* The tape pack wound on the hub. */
+  background: radial-gradient(circle at 50% 50%, #15151a 0 34%, #35353d 35%, #22222a 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: now-spin 4.5s linear infinite;
+}
+.now-spinning.is-playing .cassette-reel { animation-duration: 1.9s; }
+.now-spinning.is-busy .cassette-reel { animation-duration: 0.8s; }
+/* The toothed hub at the centre of each reel — four spokes is enough
+   to make the rotation legible at this size. */
+.cassette-hub {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  /* A fixed light plastic rather than a theme surface: the hub is
+     inside the shell, where the app's background never reaches, and on
+     the dark theme a themed hub swallowed the spokes that are the only
+     thing making the rotation visible. */
+  background: #d9d9e2;
+}
+.cassette-hub::before,
+.cassette-hub::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #0f0f13;
+}
+.cassette-hub::before { clip-path: polygon(45% 0, 55% 0, 55% 100%, 45% 100%); }
+.cassette-hub::after { clip-path: polygon(0 45%, 100% 45%, 100% 55%, 0 55%); }
+/* The exposed tape between the reels. */
+.cassette-tape {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  height: 5px;
+  background: #15151a;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+/* The two screw/guide points along the bottom edge. */
+.cassette-feet {
+  height: 3px;
+  border-radius: 2px;
+  background:
+    radial-gradient(circle at 18% 50%, rgba(255, 255, 255, 0.22) 0 1.2px, transparent 1.3px),
+    radial-gradient(circle at 82% 50%, rgba(255, 255, 255, 0.22) 0 1.2px, transparent 1.3px);
+}
+
+/* ---- CD ---- */
+
+.skin-cd {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 50%, #c9ccd6 0%, #9aa0ae 58%, #7d8392 100%);
+  border: 1px solid var(--sidebar-border-solid);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34);
+  overflow: hidden;
+  animation: now-spin 7s linear infinite;
+}
+.now-spinning.is-playing .skin-cd { animation-duration: 2.6s; }
+.now-spinning.is-busy .skin-cd { animation-duration: 0.9s; }
+
+/* The data spiral is a diffraction grating, which is why a CD throws
+   rainbows: the colour depends on the viewing angle. A conic sweep is
+   the closest honest analogue. */
+.cd-rainbow {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 210deg,
+    rgba(255, 0, 90, 0.5),
+    rgba(255, 196, 0, 0.45),
+    rgba(0, 224, 140, 0.45),
+    rgba(0, 170, 255, 0.5),
+    rgba(150, 70, 255, 0.5),
+    rgba(255, 0, 90, 0.5)
+  );
+  mix-blend-mode: screen;
+  opacity: 0.75;
+}
+/* The hard specular glint, which on a real disc stays put while the
+   disc turns under it — so this one counter-rotates. */
+.cd-sheen {
+  position: absolute;
+  inset: -20%;
+  background: linear-gradient(
+    102deg,
+    transparent 36%,
+    rgba(255, 255, 255, 0.92) 48%,
+    rgba(255, 255, 255, 0.28) 53%,
+    transparent 62%
+  );
+  animation: now-spin 7s linear infinite reverse;
+}
+.now-spinning.is-playing .cd-sheen { animation-duration: 2.6s; }
+.now-spinning.is-busy .cd-sheen { animation-duration: 0.9s; }
+/* The clear inner ring and the hub, tinted by the song. */
+.cd-ring {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent-fill) 32%, #e8eaf0);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.16);
+}
+.cd-hole {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--sidebar-solid);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+}
+
+/* ---- boombox ---- */
+
+.skin-boombox {
+  position: relative;
+  width: 92px;
+  height: 62px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform-origin: 50% 100%;
+}
+/* Bouncing, not spinning — the one skin that isn't a turning disc gets
+   the movement a boombox actually has: it jumps on the beat. */
+.now-spinning.is-playing .skin-boombox { animation: boombox-bounce 0.62s ease-in-out infinite; }
+.now-spinning.is-busy .skin-boombox { animation: boombox-bounce 0.3s ease-in-out infinite; }
+
+@keyframes boombox-bounce {
+  0%   { transform: translateY(0) rotate(0deg) scaleY(1); }
+  28%  { transform: translateY(-4px) rotate(-1.6deg) scaleY(1.02); }
+  55%  { transform: translateY(0) rotate(0deg) scaleY(0.98); }
+  78%  { transform: translateY(-2px) rotate(1.4deg) scaleY(1.01); }
+  100% { transform: translateY(0) rotate(0deg) scaleY(1); }
+}
+
+.boombox-handle {
+  width: 40px;
+  height: 11px;
+  border: 2px solid #3d3d46;
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  background: none;
+}
+.boombox-body {
+  width: 100%;
+  flex: 1;
+  border-radius: 7px;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: linear-gradient(168deg, #3c3c45 0%, #26262c 60%, #1a1a1f 100%);
+  border: 1px solid var(--sidebar-border-solid);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34);
+}
+.boombox-speaker {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 50%, #1b1b20 0 52%, #2e2e36 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+/* The cone, in the song's colour, pumping with the bounce. */
+.boombox-cone {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent-fill);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.now-spinning.is-playing .boombox-cone { animation: boombox-pump 0.62s ease-in-out infinite; }
+.now-spinning.is-busy .boombox-cone { animation: boombox-pump 0.3s ease-in-out infinite; }
+
+@keyframes boombox-pump {
+  0%, 100% { transform: scale(1); }
+  30%      { transform: scale(1.3); }
+}
+
+.boombox-deck {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.boombox-deck-window {
+  height: 13px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+.boombox-buttons {
+  height: 4px;
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    90deg,
+    #4a4a54 0 4px,
+    transparent 4px 7px
+  );
+}
+
+/* ---- the notes the music shakes loose ---- */
+
+.falling-notes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Above the Instant Mix tile they fall into, below nothing else. */
+  z-index: 2;
+}
+.falling-note {
+  position: absolute;
+  /* Starts just below the middle of the player; the travel below is a
+     fixed distance that carries it into the tile, so the fall looks
+     the same whether or not the tile's text has wrapped to two lines. */
+  top: 34%;
+  color: var(--accent-text);
+  opacity: 0;
+  will-change: transform, opacity;
+  animation-name: note-fall;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.7, 1);
+  animation-iteration-count: 1;
+  animation-fill-mode: forwards;
+}
+
+/* Down, with a sway — and gone by the time it reaches the tile, so it
+   reads as dissolving into it rather than landing on top of it. */
+@keyframes note-fall {
+  0%   { opacity: 0; transform: translate(-50%, -6px) scale(0.5) rotate(0deg); }
+  18%  { opacity: 0.85; transform: translate(calc(-50% + var(--drift) * 0.4), 14px) scale(1) rotate(calc(var(--spin) * 0.4)); }
+  62%  { opacity: 0.7; transform: translate(calc(-50% - var(--drift) * 0.5), 46px) scale(0.95) rotate(var(--spin)); }
+  100% { opacity: 0; transform: translate(calc(-50% + var(--drift) * 0.2), 92px) scale(0.45) rotate(calc(var(--spin) * 1.4)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skin-record,
+  .cassette-reel,
+  .skin-cd,
+  .cd-sheen,
+  .now-spinning.is-playing .skin-boombox,
+  .now-spinning.is-busy .skin-boombox,
+  .now-spinning.is-playing .boombox-cone,
+  .now-spinning.is-busy .boombox-cone { animation: none; }
+}

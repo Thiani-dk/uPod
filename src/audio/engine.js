@@ -38,6 +38,58 @@ export class AudioEngine {
       node = band;
     }
     node.connect(this.ctx.destination);
+
+    // A tap off the end of the chain, for anything that wants to *see*
+    // the audio rather than change it (Play Now's falling notes). An
+    // AnalyserNode passes its input straight through and this one is
+    // deliberately connected to nothing downstream, so it observes the
+    // signal without adding a second path to the destination.
+    //
+    // fftSize 256 gives 128 bins — far more resolution than "is there a
+    // beat, and is it bass or treble" needs, and cheap enough to read
+    // every frame. The smoothing is what stops a visualiser built on it
+    // from flickering on single-frame peaks.
+    this.analyser = this.ctx.createAnalyser();
+    this.analyser.fftSize = 256;
+    this.analyser.smoothingTimeConstant = 0.75;
+    this._bins = new Uint8Array(this.analyser.frequencyBinCount);
+    node.connect(this.analyser);
+  }
+
+  // A small summary of what is coming out of the speakers right now:
+  // overall loudness plus where in the spectrum it sits, all 0..1.
+  // Returns null when there is nothing to measure, so callers can tell
+  // "silent" from "no audio graph" and fall back accordingly.
+  getLevels() {
+    if (!this.analyser) return null;
+    this.analyser.getByteFrequencyData(this._bins);
+
+    const bins = this._bins;
+    const count = bins.length;
+    // Bin 0 is DC and carries no musical information. The split points
+    // are eighths of the spectrum: with a 44.1kHz context and 128 bins
+    // each bin is ~172Hz, so "bass" here is roughly up to 2.7kHz and
+    // "treble" from about 11kHz up — crude, but the question being
+    // asked ("does this moment feel low or bright?") is crude too.
+    const bassEnd = Math.floor(count / 8);
+    const trebleStart = Math.floor((count * 5) / 8);
+
+    let total = 0;
+    let bass = 0;
+    let treble = 0;
+    for (let i = 1; i < count; i++) {
+      const v = bins[i];
+      total += v;
+      if (i < bassEnd) bass += v;
+      else if (i >= trebleStart) treble += v;
+    }
+
+    const norm = (sum, n) => (n > 0 ? sum / n / 255 : 0);
+    return {
+      level: norm(total, count - 1),
+      bass: norm(bass, bassEnd - 1),
+      treble: norm(treble, count - trebleStart),
+    };
   }
 
   resume() {
