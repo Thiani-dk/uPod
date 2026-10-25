@@ -37,19 +37,29 @@ export default function QueueModal({ onClose }) {
   return (
     <div className="modal-scrim" onClick={onClose}>
       <div className="modal queue-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-title-row">
+        {/* The close button is taken out of the flow and pinned right,
+            so "Queue" is centred on the sheet itself rather than
+            centred in the space the button leaves over. */}
+        <div className="modal-title-row queue-title-row">
           <div className="modal-title">Queue</div>
-          <button className="icon-btn small" onClick={onClose} aria-label="Close queue">
+          <button className="icon-btn small queue-close" onClick={onClose} aria-label="Close queue">
             <X size={16} />
           </button>
         </div>
 
+        {/* One action at each end: shuffling what's here on the left,
+            keeping it on the right. They read as a pair of opposites
+            that way, which is what they are. */}
         <div className="queue-toolbar">
-          <button className="pill-btn" onClick={reshuffleQueue} disabled={queue.length < 2}>
+          <button className="queue-action" onClick={reshuffleQueue} disabled={queue.length < 2}>
             <Shuffle size={13} /> Reshuffle
           </button>
           {!savingAs ? (
-            <button className="pill-btn" onClick={() => setSavingAs(true)} disabled={queue.length === 0}>
+            <button
+              className="queue-action queue-action-keep"
+              onClick={() => setSavingAs(true)}
+              disabled={queue.length === 0}
+            >
               <ListPlus size={13} /> Save as playlist
             </button>
           ) : (
@@ -61,7 +71,9 @@ export default function QueueModal({ onClose }) {
                 onKeyDown={(e) => e.key === "Enter" && handleSaveAs()}
                 placeholder="Playlist name…"
               />
-              <button className="icon-btn small" onClick={handleSaveAs} aria-label="Save"><Check size={14} /></button>
+              <button className="icon-btn small queue-save-confirm" onClick={handleSaveAs} aria-label="Save">
+                <Check size={14} />
+              </button>
             </div>
           )}
         </div>

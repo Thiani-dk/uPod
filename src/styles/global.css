@@ -1570,29 +1570,101 @@ button, input, select, textarea, optgroup {
   color: #000;
 }
 
+/* "Queue" centred on the sheet, with the close button lifted out of
+   the flow and pinned right — centring it between the title and the
+   button instead would put it visibly off-centre by half a button. */
+.queue-title-row {
+  position: relative;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.queue-title-row .modal-title {
+  width: 100%;
+  text-align: center;
+}
+.queue-close {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+}
+
+/* One action at each end. They were packed together on the left in a
+   wrapping row, which read as two buttons that hadn't been placed so
+   much as left where they landed. */
 .queue-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 14px;
-  flex-wrap: wrap;
 }
 
+.queue-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 15px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+.queue-action:active { transform: scale(0.97); }
+.queue-action:disabled { opacity: 0.4; cursor: default; }
+.queue-action:not(:disabled):hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+
+/* The keeping action leans on the accent, because it is the one that
+   makes something that outlives the queue. Both themes define the
+   accent and its readable text pair, so this needs no dark/light
+   special-casing. */
+.queue-action-keep {
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+.queue-action-keep:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 20%, var(--panel));
+}
+
+/* Replaces the save button in place, so the row keeps its shape: the
+   reshuffle button stays put on the left and the field grows into
+   whatever is left. */
 .queue-save-as-row {
   display: flex;
+  align-items: center;
   gap: 6px;
   flex: 1;
-  min-width: 160px;
+  min-width: 0;
 }
 
 .queue-save-as-row input {
   flex: 1;
-  padding: 7px 10px;
+  min-width: 0;
+  padding: 9px 14px;
   border-radius: 999px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
   background: var(--panel);
   color: var(--text);
   font-size: 12px;
+  font-family: inherit;
+}
+.queue-save-as-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.queue-save-confirm {
+  flex-shrink: 0;
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
 }
 
 /* ============================================================
