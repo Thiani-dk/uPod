@@ -51,8 +51,13 @@ export class AudioEngine {
     // from flickering on single-frame peaks.
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 256;
-    this.analyser.smoothingTimeConstant = 0.75;
+    // Low smoothing on purpose. Heavy smoothing makes a prettier meter
+    // but a useless onset detector: it rounds off the attack that marks
+    // the beat and pushes the peak a frame or two late, which is
+    // exactly the error you see as "the notes aren't quite on tempo".
+    this.analyser.smoothingTimeConstant = 0.55;
     this._bins = new Uint8Array(this.analyser.frequencyBinCount);
+    this._prevBins = new Uint8Array(this.analyser.frequencyBinCount);
     node.connect(this.analyser);
   }
 
@@ -74,14 +79,24 @@ export class AudioEngine {
     const bassEnd = Math.floor(count / 8);
     const trebleStart = Math.floor((count * 5) / 8);
 
+    const prev = this._prevBins;
     let total = 0;
     let bass = 0;
     let treble = 0;
+    // Spectral flux: the sum of how much each band got *louder* since
+    // the last frame, falls ignored. It is the standard onset measure
+    // and a much better beat cue than loudness, which stays high
+    // through a sustained note and so marks the middle of a sound
+    // rather than its start.
+    let flux = 0;
     for (let i = 1; i < count; i++) {
       const v = bins[i];
       total += v;
       if (i < bassEnd) bass += v;
       else if (i >= trebleStart) treble += v;
+      const rise = v - prev[i];
+      if (rise > 0) flux += rise;
+      prev[i] = v;
     }
 
     const norm = (sum, n) => (n > 0 ? sum / n / 255 : 0);
@@ -89,6 +104,7 @@ export class AudioEngine {
       level: norm(total, count - 1),
       bass: norm(bass, bassEnd - 1),
       treble: norm(treble, count - trebleStart),
+      flux: norm(flux, count - 1),
     };
   }
 

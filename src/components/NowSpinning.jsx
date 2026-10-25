@@ -97,14 +97,19 @@ function Boombox() {
   );
 }
 
+// A 12" vinyl LP — wax. Three layers, because that is what makes it
+// read as a real record rather than a dark circle: the wax itself
+// turns, carrying its grooves and its paper label, while the gloss on
+// top stays put. Light doesn't rotate with the record, and keeping it
+// fixed is what produces the sweep of shine across the grooves as the
+// disc goes round.
 function Record() {
   return (
     <span className="skin-record">
-      {/* No mark on the label any more — a record's label is a plain
-          paper disc, and it reads as one. It takes the playing track's
-          colour, which is what makes the whole object change with the
-          music. */}
-      <span className="record-label" />
+      <span className="record-wax">
+        <span className="record-label" />
+      </span>
+      <span className="record-gloss" />
     </span>
   );
 }
