@@ -48,7 +48,27 @@ const SECTION_GAP_S = 5;
 // timed to where the vocal lands, and a karaoke line that arrives exactly
 // on the beat is already too late to read — this is the standard small
 // lead-in.
-const LEAD_IN_S = 0.3;
+const LEAD_IN_S = 0.22;
+
+// ...but a fixed lead-in is wrong for lines that come straight after one
+// another: at 0.22s it lights the next line while the one before it is
+// still being sung, which is most of what reads as "ahead of the music".
+// So the lead never eats more than this share of the gap behind the line.
+const LEAD_GAP_SHARE = 1 / 3;
+
+// A stamped line whose next line is this far away isn't being sung for
+// all of that time — the rest is an instrumental. Holding the highlight
+// on it for ten seconds makes the screen look stuck, so the line stays
+// lit only for its own singing, up to this long.
+const MAX_LINE_HOLD_S = 6;
+
+// The highlight runs on its own clock between the audio element's ticks
+// (which arrive only a few times a second — quantising every lyric to a
+// quarter of a second is itself audible as bad timing). If ticks stop
+// coming, from a stall or a backgrounded WebView, that clock must not run
+// away from the music, so it never reaches further than this past the
+// last real reading.
+const MAX_EXTRAPOLATION_S = 0.4;
 
 // After the user scrolls by hand, auto-scroll stands down for this long
 // so it isn't fighting them for control of the list.
@@ -90,8 +110,22 @@ function buildLyricModel(result) {
       if (i > 0 && (isHeader || !entry.text.trim() || (previous != null && entry.time - previous > SECTION_GAP_S))) {
         section++;
       }
+      const gapBehind = previous == null ? Infinity : entry.time - previous;
+      const lead = Math.max(0, Math.min(LEAD_IN_S, gapBehind * LEAD_GAP_SHARE));
+      const next = synced[i + 1];
       previous = entry.time;
-      return { text: entry.text, time: entry.time, section, isHeader };
+      return {
+        text: entry.text,
+        time: entry.time,
+        // When the line lights up, and when it stops being the live one:
+        // resolved here, once per lookup, so the per-frame cursor is a
+        // binary search over plain numbers.
+        at: Math.max(0, entry.time - lead),
+        until: next ? Math.min(next.time, entry.time + MAX_LINE_HOLD_S) : Infinity,
+        section,
+        isHeader,
+        blank: !entry.text.trim(),
+      };
     });
     return { lines, sections: section + 1, synced: true };
   }
@@ -121,23 +155,109 @@ function buildLyricModel(result) {
   return { lines, sections: section + 1, synced: false };
 }
 
-// Which line and section are current. Synced lyrics answer this exactly.
+// The last line whose lighting moment has passed. Binary search, because
+// this runs on every animation frame.
+function lineAt(lines, t) {
+  let lo = 0;
+  let hi = lines.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].at <= t) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
+// Where synced lyrics are, to the frame.
+//
+// The player's currentTime arrives on the audio element's "timeupdate",
+// which fires a few times a second — good enough for a progress bar, but
+// a karaoke line can only land on one of those ticks, so every lyric is
+// up to a quarter of a second off the vocal and the error wanders. This
+// keeps its own clock instead: each tick is taken as a fix on the music,
+// and between fixes the time is carried forward by the wall clock at the
+// current playback rate. Only an actual change of line is pushed into
+// React state, so the sheet still renders once per line, not per frame.
+//
+// Returns the lit line (-1 through an instrumental, where claiming a line
+// is being sung would be a lie) and the line to keep centred, which
+// during an instrumental is the verse about to start.
+function useSyncedCursor(model, currentTime, playing, playbackRate) {
+  const [cursor, setCursor] = useState({ line: -1, anchor: -1 });
+  const fixRef = useRef({ at: 0, time: 0 });
+  const pausedTime = playing ? null : currentTime;
+
+  // Every reading from the player — including a seek — is a fresh fix.
+  useEffect(() => {
+    fixRef.current = { at: performance.now(), time: currentTime };
+  }, [currentTime]);
+
+  useEffect(() => {
+    if (!model.synced || model.lines.length === 0) {
+      setCursor({ line: -1, anchor: -1 });
+      return;
+    }
+    const resolve = () => {
+      const fix = fixRef.current;
+      const drift = playing
+        ? Math.min(MAX_EXTRAPOLATION_S, (performance.now() - fix.at) / 1000) * (playbackRate || 1)
+        : 0;
+      const t = fix.time + drift;
+      const i = lineAt(model.lines, t);
+      const entry = i >= 0 ? model.lines[i] : null;
+      // Sung now, as opposed to merely the most recent thing sung: a
+      // blank or header stamp, or a line whose singing is over and whose
+      // next line hasn't come round yet, leaves nothing lit.
+      const lit = entry && !entry.blank && !entry.isHeader && t < entry.until ? i : -1;
+      let anchor = lit;
+      if (anchor < 0) {
+        // Look ahead to the next line with words in it, so the sheet is
+        // already sitting on the verse when the vocal comes back.
+        anchor = -1;
+        for (let j = Math.max(0, i + 1); j < model.lines.length; j++) {
+          if (!model.lines[j].blank && !model.lines[j].isHeader) {
+            anchor = j;
+            break;
+          }
+        }
+        if (anchor < 0) anchor = i;
+      }
+      setCursor((prev) => (prev.line === lit && prev.anchor === anchor ? prev : { line: lit, anchor }));
+    };
+    // Paused, the time isn't moving, so there is nothing for a frame loop
+    // to find — one resolve per reading (which includes a seek made while
+    // paused) is the whole job.
+    if (!playing) {
+      resolve();
+      return undefined;
+    }
+    let raf = 0;
+    const frame = () => {
+      resolve();
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+    // pausedTime is currentTime only while stopped: while playing, the
+    // loop reads the fix itself and must not be torn down on every tick.
+  }, [model, playing, playbackRate, pausedTime]);
+
+  return cursor;
+}
+
+// Which section is current when there are no stamps at all.
 // Plain lyrics can only be estimated, and the estimate is deliberately
 // coarse: sections are weighted by how many lines they hold and laid over
 // the track's duration, which is right often enough to be useful for
 // following along and never pretends to be word-accurate — the screen
 // says as much.
 function resolvePosition(model, currentTime, duration) {
-  if (model.lines.length === 0) return { line: -1, section: -1, estimated: false };
-
-  if (model.synced) {
-    let line = -1;
-    for (let i = 0; i < model.lines.length; i++) {
-      if (model.lines[i].time <= currentTime + LEAD_IN_S) line = i;
-      else break;
-    }
-    return { line, section: line >= 0 ? model.lines[line].section : -1, estimated: false };
-  }
+  if (model.lines.length === 0) return { line: -1, section: -1, estimated: true };
 
   if (!duration || !Number.isFinite(duration) || duration <= 0) {
     return { line: -1, section: -1, estimated: true };
@@ -160,7 +280,7 @@ function resolvePosition(model, currentTime, duration) {
 }
 
 export default function Karaoke() {
-  const { queue, queueIndex } = usePlayerState();
+  const { queue, queueIndex, playing, playbackRate } = usePlayerState();
   const { currentTime, duration } = usePlayerTime();
   const { seek } = usePlayerActions();
   const track = queue[queueIndex];
@@ -200,18 +320,28 @@ export default function Karaoke() {
   }, [track?.id, online]);
 
   const model = useMemo(() => buildLyricModel(result), [result]);
-  const position = useMemo(
-    () => resolvePosition(model, currentTime, duration),
+  const synced = useSyncedCursor(model, currentTime, playing, playbackRate);
+  const estimated = useMemo(
+    () => (model.synced ? null : resolvePosition(model, currentTime, duration)),
     [model, currentTime, duration]
   );
+  const position = model.synced
+    ? {
+        line: synced.line,
+        // Through an instrumental the section that lifts is the one about
+        // to be sung, which is the one the anchor is already on.
+        section: synced.anchor >= 0 ? model.lines[synced.anchor].section : -1,
+        estimated: false,
+      }
+    : estimated;
   // The line auto-scroll centres on: the sung line when the lyrics are
   // synced, the first real line of the live section when they're only
   // estimated.
   const anchorIndex = useMemo(() => {
-    if (model.synced) return position.line;
+    if (model.synced) return synced.anchor;
     if (position.section < 0) return -1;
     return model.lines.findIndex((l) => l.section === position.section && !l.blank);
-  }, [model, position.line, position.section]);
+  }, [model, synced.anchor, position.section]);
 
   // Keep the current line (or section) in view, unless the user has just
   // taken over scrolling themselves.
@@ -220,9 +350,15 @@ export default function Karaoke() {
     const active = activeRef.current;
     if (!scroller || !active) return;
     if (Date.now() - manualScrollAtRef.current < MANUAL_SCROLL_GRACE_MS) return;
-    const target = active.offsetTop - scroller.clientHeight / 2 + active.offsetHeight / 2;
-    scroller.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
-  }, [position.line, position.section]);
+    // Slightly above centre: what's coming is what you need to read, so
+    // the live line sits a little high and the next few lines get the
+    // roomier half of the screen.
+    const target = Math.max(0, active.offsetTop - scroller.clientHeight * 0.42 + active.offsetHeight / 2);
+    // A smooth scroll restarted a few pixels from where it was already
+    // heading reads as a stutter, so sub-line corrections are left alone.
+    if (Math.abs(scroller.scrollTop - target) < 8) return;
+    scroller.scrollTo({ top: target, behavior: "smooth" });
+  }, [anchorIndex, position.line, position.section]);
 
   function retry() {
     if (!track) return;
@@ -294,12 +430,17 @@ export default function Karaoke() {
               const inSection = line.section === position.section;
               const isActive = model.synced ? i === position.line : false;
               const isAnchor = i === anchorIndex;
+              // Stamped lyrics know line by line what has already been
+              // sung; estimated ones only know it a section at a time.
+              const isPast = model.synced
+                ? anchorIndex >= 0 && i < anchorIndex && !inSection
+                : !inSection && position.section >= 0 && line.section < position.section;
               const classes = [
                 line.isHeader ? "karaoke-section" : "karaoke-line",
                 line.blank ? "karaoke-blank" : "",
                 inSection ? "in-section" : "",
                 isActive ? "is-active" : "",
-                !inSection && position.section >= 0 && line.section < position.section ? "is-past" : "",
+                isPast ? "is-past" : "",
               ]
                 .filter(Boolean)
                 .join(" ");

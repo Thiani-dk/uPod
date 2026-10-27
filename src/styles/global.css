@@ -848,13 +848,20 @@ button, input, select, textarea, optgroup {
    line being sung inside it lights up, and everything else sits back.
    A single lit line on a dark sheet reads as a teleprompter — being able
    to see where you are *within* the verse is what makes it followable. */
+/* Nothing here may change the metrics of the text. Weight, size, spacing
+   and transforms all re-measure the glyphs, which re-wraps the line and
+   shifts every line under it — on a sheet where a new line lights up
+   every couple of seconds that is a constant small twitch, and it is what
+   the left edge of the lyrics appears to be doing when it looks like the
+   indentation is moving. So the live line is made out of colour, opacity
+   and glow only, and sits in exactly the box it occupied when dark. */
 .karaoke-line,
 .karaoke-section {
-  transition: color .28s ease, opacity .28s ease, transform .28s ease, text-shadow .28s ease;
+  transition: color .3s ease, opacity .3s ease, text-shadow .3s ease, background-color .3s ease;
   border-radius: 8px;
   padding: 2px 8px;
 }
-.karaoke-line { color: var(--text); opacity: 0.34; }
+.karaoke-line { color: var(--text); opacity: 0.34; font-weight: 600; }
 .karaoke-section {
   font-size: 10.5px;
   text-transform: uppercase;
@@ -880,12 +887,9 @@ button, input, select, textarea, optgroup {
    to track instead of taking its colour from the cover art. */
 .karaoke-line.is-active {
   opacity: 1;
-  font-weight: 700;
   color: var(--brand);
   background: color-mix(in srgb, var(--brand) 9%, transparent);
   text-shadow: 0 0 1px var(--brand-glow), 0 0 10px var(--brand-glow), 0 0 26px var(--brand-glow);
-  transform: scale(1.015);
-  transform-origin: left center;
 }
 
 /* Estimated (unsynced) lyrics have no per-line timing, so the section is
@@ -901,7 +905,6 @@ button, input, select, textarea, optgroup {
 
 @media (prefers-reduced-motion: reduce) {
   .karaoke-line, .karaoke-section { transition: none; }
-  .karaoke-line.is-active { transform: none; }
 }
 
 .karaoke-fallback-note { margin-top: 20px; font-size: 11px; color: var(--text-dim); border-top: 1px solid var(--border); padding-top: 14px; }
