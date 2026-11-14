@@ -1,0 +1,4 @@
+# The bundled yt-dlp is a 40MB binary fetched by scripts/fetch-ytdlp.mjs —
+# `npm run setup` pulls the current one, which is the point: a stale
+# yt-dlp in git would be worse than no yt-dlp.
+bin/
