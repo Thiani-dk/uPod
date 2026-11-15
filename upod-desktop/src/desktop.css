@@ -162,6 +162,123 @@ button,
   user-select: none;
 }
 
+/* --- Now Playing: sized to the window, not to a phone -----------------------
+ * The phone screen is a fixed 380px column — artwork, title, progress,
+ * transport, stacked and centred. On a laptop window that column is an
+ * island: a third of the width unused on each side and ~250px of dead
+ * space below the controls, and because the window is resizable there is
+ * no one fixed size that is right. So nothing here is a fixed size.
+ *
+ *   * The column centres itself vertically instead of hugging the top, so
+ *     the whitespace is shared above and below rather than dumped at the
+ *     bottom.
+ *   * Artwork and type are clamped against both vh and vw: the art grows
+ *     with a taller window and stops growing when the window is wide but
+ *     short, which is the shape a laptop is usually in.
+ *   * Past ~900px of window the column becomes two panes — art on the
+ *     left, the track and its controls on the right. The art is taken out
+ *     of flow and the column is padded aside for it, rather than being
+ *     made a grid: the art spans the whole stack, and a grid item that
+ *     spans every row forces those rows to grow to match it, which would
+ *     stretch the gaps between title, progress and transport as the art
+ *     got bigger.
+ *
+ * Every selector below is scoped under .np-screen, which is the normal
+ * view only. The immersive view reuses several of the same classes —
+ * .np-playing-from, .np-progress, .np-transport-row, .np-title — inside
+ * .np-immersive, and it is already full-bleed, so none of this should
+ * reach it.
+ */
+#root .upod-root .np-screen {
+  max-width: min(540px, 100%);
+  min-height: 100%;
+  justify-content: center;
+  padding-top: 0;
+  padding-bottom: 8px;
+}
+
+#root .upod-root .np-screen .np-art {
+  width: min(100%, 46vh);
+}
+
+/* .content reserves 100px at the bottom for the mini player to float over.
+ * Now Playing is the one screen that never renders the mini player (it is
+ * the full-size version of it), so there that reservation is just dead
+ * space — and it was pulling the centred column visibly above the middle
+ * of the window. :has(.np-screen) is true on that screen only. */
+#root .upod-root .content:has(> .np-screen) {
+  padding-bottom: 16px;
+}
+
+#root .upod-root .np-screen .np-title {
+  font-size: clamp(22px, 3.2vh, 32px);
+}
+#root .upod-root .np-screen .np-artist {
+  font-size: 11.5px;
+}
+#root .upod-root .np-screen .np-playing-from-name {
+  font-size: 13.5px;
+}
+
+/* The transport is drawn by whichever button pack is selected, each with
+ * its own sizes — scaling the row leaves every pack's proportions intact
+ * where overriding .tp-main would only have fixed one of them. zoom (not
+ * transform) because it reflows: the row still reserves the space it
+ * occupies, so nothing below it is overlapped. */
+#root .upod-root .np-screen .np-transport-row .tp {
+  zoom: 1.1;
+}
+
+@media (min-width: 900px) {
+  #root .upod-root .np-screen {
+    --np-art: clamp(240px, min(52vh, 34vw), 560px);
+    --np-gap: clamp(28px, 3.5vw, 72px);
+    --np-col: clamp(300px, 27vw, 460px);
+    position: relative;
+    max-width: calc(var(--np-art) + var(--np-gap) + var(--np-col));
+    padding-left: calc(var(--np-art) + var(--np-gap));
+    align-items: stretch;
+  }
+
+  /* Centred against the whole column rather than sitting at its top: with
+   * the controls stacked beside it, art pinned to the top would leave the
+   * pane bottom-heavy at every window size but one. */
+  #root .upod-root .np-screen .np-art {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: var(--np-art);
+  }
+
+  /* "Playing from" belongs over the title it describes, so it takes the
+   * title's left edge instead of the phone's centring. */
+  #root .upod-root .np-screen .np-playing-from {
+    align-items: flex-start;
+    text-align: left;
+    margin-bottom: 10px;
+  }
+  #root .upod-root .np-screen .np-playing-from-name {
+    max-width: 100%;
+  }
+
+  #root .upod-root .np-screen .np-meta {
+    margin-top: 0;
+  }
+  #root .upod-root .np-screen .np-title {
+    font-size: clamp(24px, 1.9vw + 0.6vh, 40px);
+  }
+  #root .upod-root .np-screen .np-progress {
+    margin-top: 18px;
+  }
+  #root .upod-root .np-screen .np-transport-row {
+    margin-top: 14px;
+  }
+  #root .upod-root .np-screen .np-transport-row .tp {
+    zoom: 1.15;
+  }
+}
+
 /* --- mini player mode --------------------------------------------------------
  * Ctrl+Shift+M shrinks the window to a bar and pins it on top. The layout
  * keys off the window's *height*, not a mode flag, so dragging the window
@@ -319,15 +436,29 @@ button,
   color: rgba(242, 242, 245, 0.78);
 }
 
-/* The permanent way into the shortcut sheet. Bottom-left, clear of the
- * transport bar and of the content column, and gone entirely in mini
- * mode where there is no room for anything but the music. */
+/* The permanent way into the shortcut sheet.
+ *
+ * It used to sit bottom-left, on the theory that the corner was empty.
+ * It isn't: the sidebar's footer lives there, so the button landed
+ * squarely on top of "Switch to Liquid Glass" / "Classic (iPod) mode" and
+ * covered a corner of whichever one was lowest. The top-right of the
+ * title bar is the one strip of chrome that is empty on every screen —
+ * .topbar holds only the hamburger (hidden when the nav is docked) and a
+ * left-aligned title — so the button has it to itself, nothing is
+ * underneath it, and it is still far from the transport.
+ *
+ * Hidden where there is no .topbar to sit in: the Classic skin replaces
+ * the whole shell and has its own chip up there, and onboarding is a
+ * full-bleed screen. :has() on <body> works because the button is a
+ * sibling of #root, not a child of React's tree.
+ */
 .desktop-help-btn {
+  display: none;
   position: fixed;
-  left: 16px;
-  bottom: 16px;
-  width: 30px;
-  height: 30px;
+  top: 9px;
+  right: 22px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(20, 20, 26, 0.55);
@@ -338,13 +469,20 @@ button,
   transition: opacity 140ms ease, background 140ms ease;
   z-index: 180;
 }
+/* The immersive view is deliberately nothing but the artwork, so the
+ * button stays out of it too — :not() rather than a second rule, because
+ * :has() takes the specificity of its most specific argument and a
+ * three-class "hide" would have lost to this two-class "show". */
+body:has(#root .shell .topbar):not(:has(#root .np-immersive-open)) .desktop-help-btn {
+  display: block;
+}
 .desktop-help-btn:hover {
   opacity: 1;
   background: rgba(20, 20, 26, 0.85);
 }
 
 @media (max-height: 220px) {
-  .desktop-help-btn {
+  body:has(#root .shell .topbar) .desktop-help-btn {
     display: none;
   }
 }

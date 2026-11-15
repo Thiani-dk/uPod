@@ -277,7 +277,11 @@ function setCompactMode(enabled) {
     if (mainWindow.isMaximized()) mainWindow.unmaximize();
     const area = screen.getDisplayMatching(mainWindow.getBounds()).workArea;
     mainWindow.setMinimumSize(320, 110);
-    mainWindow.setBounds({
+    // Content bounds, not window bounds — COMPACT_SIZE describes the bar
+    // the renderer draws, and the layout that turns the app into that bar
+    // keys off the *content* height (max-height: 220px in desktop.css).
+    // Through setBounds the frame ate ~27px of it.
+    mainWindow.setContentBounds({
       ...COMPACT_SIZE,
       // Bottom right, where a now-playing widget belongs, with room for
       // a dock or panel.
@@ -290,11 +294,25 @@ function setCompactMode(enabled) {
     mainWindow.setAlwaysOnTop(false);
     mainWindow.setMinimumSize(360, 120);
     const restored = savedWindowState();
-    mainWindow.setBounds({
+    const here = mainWindow.getContentBounds();
+    // Same content-vs-window mismatch as above, and here it compounded:
+    // the saved size is a *content* size (rememberWindowState records
+    // getContentBounds), and feeding it to setBounds as a window size
+    // handed the frame's height to the frame — so every trip into mini
+    // mode and back came home ~27px shorter than it left. Four round
+    // trips measured 795 → 766 → 740 → 712 → 686. setContentBounds is the
+    // exact inverse of what was saved, and recording the request as
+    // requestedBounds lets rememberWindowState anchor to it, which is what
+    // keeps fractional scaling from rounding a couple of pixels onto the
+    // width each time (see rememberWindowState).
+    const bounds = {
       width: restored.width || 1180,
       height: restored.height || 820,
-      ...(Number.isFinite(restored.x) ? { x: restored.x, y: restored.y } : {}),
-    });
+      x: Number.isFinite(restored.x) ? restored.x : here.x,
+      y: Number.isFinite(restored.x) ? restored.y : here.y,
+    };
+    requestedBounds = bounds;
+    mainWindow.setContentBounds(bounds);
     if (config.window?.maximized) mainWindow.maximize();
   }
   send("win:compact", { compact: compactMode });

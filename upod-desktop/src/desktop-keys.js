@@ -60,7 +60,12 @@ function isTyping(target) {
 
 function seekBy(seconds) {
   const el = audioEl;
-  if (!el || !Number.isFinite(el.duration)) return false;
+  if (!el || !Number.isFinite(el.duration)) {
+    // Silence here reads as a broken key. It isn't — there is just
+    // nothing loaded to move through yet.
+    toast("Nothing to seek — play a track first");
+    return true;
+  }
   const next = Math.min(Math.max(el.currentTime + seconds, 0), el.duration);
   // Through the app's own seek handler where it has one, so its position
   // state and the desktop's media controls stay in step; straight to the
@@ -72,7 +77,10 @@ function seekBy(seconds) {
 
 function nudgeVolume(delta) {
   const el = audioEl;
-  if (!el) return false;
+  if (!el) {
+    toast("Volume applies once a track is loaded");
+    return true;
+  }
   el.muted = false;
   el.volume = Math.min(Math.max(el.volume + delta, 0), 1);
   toast(`Volume ${Math.round(el.volume * 100)}%`);
@@ -81,7 +89,10 @@ function nudgeVolume(delta) {
 
 function toggleMute() {
   const el = audioEl;
-  if (!el) return false;
+  if (!el) {
+    toast("Nothing is loaded to mute");
+    return true;
+  }
   el.muted = !el.muted;
   toast(el.muted ? "Muted" : `Volume ${Math.round(el.volume * 100)}%`);
   return true;
@@ -109,9 +120,33 @@ function clickNav(label) {
   return false;
 }
 
-function focusSearch() {
-  const input = document.querySelector('.content input[type="search"], .content input[placeholder*="earch"]');
-  if (!input) return false;
+// Which screen is up, by the label the nav shows for it — the only handle
+// this file has on React's `screen` state, and enough to put the user back
+// where they were after a shortcut had to move them.
+function currentNavLabel() {
+  return document.querySelector(".sidebar .nav-item.active")?.textContent.trim() || "";
+}
+
+// React renders on its own schedule, so a binding that clicks a control
+// and then reads the DOM has to let that render land first.
+function nextRender() {
+  return new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(resolve))
+  );
+}
+
+// The search box only exists on Library, so from anywhere else "/" used to
+// be a key that did nothing. Going there first is what the user wanted.
+async function focusSearch() {
+  const find = () =>
+    document.querySelector('.content input[type="search"], .content input[placeholder*="earch"]');
+  let input = find();
+  if (!input) {
+    if (!clickNav("Library")) return false;
+    await nextRender();
+    input = find();
+    if (!input) return false;
+  }
   input.focus();
   input.select?.();
   return true;
@@ -133,16 +168,74 @@ function toggleSidebar() {
 }
 
 // --- mini mode --------------------------------------------------------------
+// The bar the compact window shows is the app's own MiniPlayer, and
+// App.jsx mounts that on every screen *except* Now Playing — which is
+// exactly the screen you are on while listening. The first version read
+// `.mini-player` in the DOM as "is anything playing", so Ctrl+Shift+M from
+// Now Playing, with music audibly playing, answered "needs something
+// playing". Two separate questions, asked as one:
+//
+//   * Is a track loaded? navigator.mediaSession.metadata — the app sets it
+//     through the media-session shim for the desktop's own controls, so it
+//     is true wherever you are, playing or paused.
+//   * Will the bar render here? That is a screen question, and the answer
+//     on Now Playing is no — so step off it for the duration and step back
+//     when the window grows again.
+function loadedTrack() {
+  return navigator.mediaSession?.metadata?.title || "";
+}
+
+// Where to return to when the window comes back up to full size; null
+// whenever compact mode didn't have to move the user.
+let screenBeforeCompact = null;
+
+async function enterCompact(native) {
+  if (!loadedTrack()) {
+    toast("Play something first — the mini player shows the current track");
+    return;
+  }
+
+  if (!document.querySelector(".mini-player")) {
+    const from = currentNavLabel();
+    if (!clickNav("Library")) {
+      toast("Mini player is not available here");
+      return;
+    }
+    screenBeforeCompact = from || null;
+    await nextRender();
+
+    // Still nothing: the bar was swiped away (miniPlayerHidden), and a
+    // window with no bar in it is a blank window. Say so, and undo the
+    // screen change rather than leaving the user somewhere they didn't ask
+    // to be.
+    if (!document.querySelector(".mini-player")) {
+      if (screenBeforeCompact) clickNav(screenBeforeCompact);
+      screenBeforeCompact = null;
+      toast("Mini player was dismissed — start a track to bring it back");
+      return;
+    }
+  }
+
+  await native.setCompact(true);
+}
+
+async function leaveCompact(native) {
+  await native.setCompact(false);
+  if (screenBeforeCompact) {
+    clickNav(screenBeforeCompact);
+    screenBeforeCompact = null;
+  }
+}
+
 async function toggleCompact() {
   const native = window.upodNative?.win;
-  if (!native) return false;
-  const { compact } = await native.getCompact();
-  if (!compact && !document.querySelector(".mini-player")) {
-    toast("Mini player needs something playing");
-    return true;
+  if (!native) {
+    toast("Mini player needs the desktop window");
+    return;
   }
-  await native.setCompact(!compact);
-  return true;
+  const { compact } = await native.getCompact();
+  if (compact) await leaveCompact(native);
+  else await enterCompact(native);
 }
 
 // --- feedback ---------------------------------------------------------------
@@ -173,7 +266,7 @@ const SHORTCUTS = [
     ["M", "Mute"],
   ]],
   ["Getting around", [
-    ["/", "Search your library"],
+    ["/  or  Ctrl + F", "Search your library (jumps to Library)"],
     ["Ctrl + 1 … 6", "Now Playing, Library, Studio, Karaoke, Equalizer, Settings"],
     ["Ctrl + B", "Show / hide the menu (narrow windows)"],
     ["Esc", "Back — closes a sheet, then the menu, then up a screen"],
@@ -245,7 +338,7 @@ function handleKey(e) {
     };
     if (navByNumber[e.key]) handled = clickNav(navByNumber[e.key]);
     else if (e.key.toLowerCase() === "b") handled = toggleSidebar();
-    else if (e.key.toLowerCase() === "f") handled = focusSearch();
+    else if (e.key.toLowerCase() === "f") { focusSearch(); handled = true; }
   } else if (ctrl && e.shiftKey && e.key.toLowerCase() === "m") {
     toggleCompact();
     handled = true;
@@ -253,6 +346,10 @@ function handleKey(e) {
     switch (e.key) {
       case " ":
         handled = triggerMediaAction("playpause");
+        if (!handled) {
+          toast("Nothing is loaded — pick a track to start");
+          handled = true;
+        }
         break;
       case "ArrowRight":
         handled = seekBy(e.shiftKey ? SEEK_LARGE : SEEK_SMALL);
@@ -279,7 +376,8 @@ function handleKey(e) {
         handled = toggleMute();
         break;
       case "/":
-        handled = focusSearch();
+        focusSearch();
+        handled = true;
         break;
       case "?":
         handled = toggleSheet();
@@ -341,7 +439,8 @@ export function installDesktopKeys() {
   document.addEventListener("dblclick", (e) => {
     if (!document.documentElement.classList.contains("upod-compact")) return;
     if (e.target.closest(".mini-play, .mini-dismiss")) return;
-    window.upodNative?.win?.setCompact(false);
+    const native = window.upodNative?.win;
+    if (native) leaveCompact(native);
   });
 }
 
