@@ -118,7 +118,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix,
   // Tracks-tab rows reach it by tapping ⋯ because their hold is taken by
   // bulk-select; search-result rows, which have no competing hold, also
   // accept a long-press via menuRowProps.
-  const { openMenu, menuRowProps, overlays } = useTrackActions({ onPlay: playSong });
+  const { openMenu, menuRowProps, menuContextProps, overlays } = useTrackActions({ onPlay: playSong });
 
   function filterByArtist(artist) {
     // "Artist" (from a track's action menu or a search result) narrows via
@@ -317,6 +317,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix,
                         // holding one opens its actions menu. A tap still
                         // plays it.
                         {...menuRowProps(t, () => playSong(t))}
+                        {...menuContextProps(t)}
                       >
                         <div className={`track-row-thumb ${t.cover ? "" : "cover-glass"}`} style={t.cover ? { background: `url(${t.cover}) center/cover` } : undefined}>
                           {!t.cover && <NoteMark size={18} style={{ color: "var(--accent-text)" }} />}
@@ -439,6 +440,12 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix,
                   // on, at which point it toggles instead — see
                   // useBulkSelect.
                   {...rowProps(t.id, () => playSong(t))}
+                  // Right-click opens the menu, which the hold here can't
+                  // (it belongs to bulk-select). Stood down mid-selection
+                  // for the same reason the ⋯ button is: this acts on one
+                  // track and the screen is about several. rowProps' own
+                  // handler still suppresses the browser menu.
+                  {...(selecting ? {} : menuContextProps(t))}
                 >
                   {selecting ? (
                     <BulkSelectBox checked={selected} />

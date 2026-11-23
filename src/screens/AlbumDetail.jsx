@@ -32,7 +32,7 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
   // Reached by TAP, not by hold: the hold on these rows is bulk-select
   // (just above), and giving it a second meaning would break both.
   // `menuRowProps` is deliberately unused here for that reason.
-  const { openMenu, overlays } = useTrackActions({
+  const { openMenu, menuContextProps, overlays } = useTrackActions({
     onPlay: (t) => playAlbumFromTrack(album, t),
   });
   const coverInputRef = useRef(null);
@@ -176,6 +176,9 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
                 // A tap plays the track until selection mode is on, at
                 // which point it toggles instead — see useBulkSelect.
                 {...rowProps(t.id, () => playAlbumFromTrack(album, t))}
+                // The mouse's way in, since the hold here is bulk-select.
+                // Stands down mid-selection, like the ⋯ button.
+                {...(selecting ? {} : menuContextProps(t))}
               >
                 {/* The checkbox takes the track number's slot, so rows
                     keep their width going in and out of the mode. */}

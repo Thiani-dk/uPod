@@ -37,7 +37,7 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
   // belongs to the grip handle, which is its own small button, so the row
   // body is free. The ⋯ button is kept alongside it as the discoverable
   // way in — a hold nobody knows about is not an affordance.
-  const { openMenu, menuRowProps, overlays } = useTrackActions({
+  const { openMenu, menuRowProps, menuContextProps, overlays } = useTrackActions({
     onPlay: (t) => playPlaylist(playlist, t),
   });
 
@@ -153,6 +153,7 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
                 className="track-row-play"
                 // Hold to open the actions menu, tap to play from here.
                 {...menuRowProps(t, () => playPlaylist(playlist, t))}
+                {...menuContextProps(t)}
               >
                 <span className="track-n">{i + 1}</span>
                 <span className="track-title"><span className="track-title-text">{t.title}</span></span>
