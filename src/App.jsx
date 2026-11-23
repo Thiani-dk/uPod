@@ -7,6 +7,7 @@ import "./styles/global.css";
 import { PlayerProvider, usePlayerState, usePlayerActions } from "./store/PlayerContext";
 import { consumeTopBackHandler } from "./utils/backHandlerStack";
 import { onSharedUrl } from "./utils/shareTarget";
+import { NavProvider } from "./utils/navigation";
 import {
   downloadAudio,
   newDownloadId,
@@ -135,6 +136,12 @@ function Shell() {
   // shortcut...) so the playlist's Back button returns you there instead
   // of always dropping you back on Studio.
   const [playlistOrigin, setPlaylistOrigin] = useState("library");
+  // Library's unified search box, held up here rather than inside Library
+  // because it is now also a navigation target: a track's actions menu has
+  // an "Artist" row, and from Album or Playlist detail that has to both
+  // leave the screen and arrive with the search already filled in. Library
+  // still owns everything it does with the value.
+  const [librarySearch, setLibrarySearch] = useState("");
   // The URL of a link shared in from YouTube/Instagram, held only for as
   // long as the quality picker is up. Nothing is fetched until a quality
   // is chosen — a share is a request to be asked, not to start a download.
@@ -539,6 +546,14 @@ function Shell() {
     setScreen("album");
   }
 
+  // Where "Artist" in a track's actions menu lands, from any screen: the
+  // library's one search bar, pre-filled. Matches what the menu already
+  // did from the Tracks tab — it just works from everywhere now.
+  function openArtist(artist) {
+    setLibrarySearch(artist || "");
+    setScreen("library");
+  }
+
   function openPlaylist(playlist) {
     // If a playlist is opened from within another playlist (edge case),
     // keep the original origin rather than chaining to "playlist" itself.
@@ -546,6 +561,14 @@ function Shell() {
     setActivePlaylist(playlist);
     setScreen("playlist");
   }
+
+  // Rebuilt whenever navigation state moves, which is rare; the track
+  // rows under it re-render on that anyway.
+  const navValue = useMemo(
+    () => ({ openAlbum, openPlaylist, openArtist }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [screen, playlistOrigin]
+  );
 
   const rootClass = Capacitor.isNativePlatform() ? "upod-root native-platform" : "upod-root";
   // --accent stays exactly what the cover gave us (fills, borders,
@@ -659,6 +682,10 @@ function Shell() {
               </button>
             </div>
           )}
+          {/* Every track row in here opens the same actions menu, and two
+              of its rows (Album, Artist) have to leave the screen they
+              were opened from — see utils/navigation.jsx. */}
+          <NavProvider value={navValue}>
           <div className="content">
             {screen === "nowplaying" && (
               <NowPlaying
@@ -677,7 +704,13 @@ function Shell() {
               />
             )}
             {screen === "library" && (
-              <Library onOpenAlbum={openAlbum} onOpenPlaylist={openPlaylist} onOpenInstantMix={() => setScreen("instantmix")} />
+              <Library
+                onOpenAlbum={openAlbum}
+                onOpenPlaylist={openPlaylist}
+                onOpenInstantMix={() => setScreen("instantmix")}
+                search={librarySearch}
+                onSearchChange={setLibrarySearch}
+              />
             )}
             {screen === "instantmix" && <InstantMix onBack={() => setScreen("library")} />}
             {screen === "album" && activeAlbum && (
@@ -692,6 +725,7 @@ function Shell() {
             {screen === "settings" && <Settings onOpenReviewTracks={() => setScreen("reviewtracks")} />}
             {screen === "reviewtracks" && <ReviewTracks onBack={() => setScreen("settings")} />}
           </div>
+          </NavProvider>
           {/* Above the mini player, below the scrolling content. It is a
               normal-flow sibling of .content rather than an overlay, so
               it has to sit ahead of MiniPlayer here — after it, the

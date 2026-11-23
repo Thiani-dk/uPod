@@ -1,15 +1,12 @@
 // src/screens/Library.jsx
 import React, { useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Search, X, FolderOpen, Wand2, MoreVertical, Bookmark, User, Play, ArrowDownAZ, ArrowUpZA, GripVertical } from "lucide-react";
+import { Search, X, FolderOpen, Wand2, MoreVertical, User, Play, ArrowDownAZ, ArrowUpZA, GripVertical } from "lucide-react";
 import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID, playlistCoverKey } from "../store/PlayerContext";
 import { useUnifiedSearch } from "../utils/search";
 import NoteMark from "../components/NoteMark";
 import PlayNow from "./PlayNow";
-import TrackActionsMenu from "../components/TrackActionsMenu";
-import AddToPlaylistModal from "../components/AddToPlaylistModal";
-import MetadataEditModal from "../components/MetadataEditModal";
-import MetadataCleaner from "../components/MetadataCleaner";
+import useTrackActions from "../components/useTrackActions";
 import PlaylistActionsMenu from "../components/PlaylistActionsMenu";
 import BulkActionBar from "../components/BulkActionBar";
 import BulkSelectBox from "../components/BulkSelectBox";
@@ -41,10 +38,9 @@ function LibrarySkeleton() {
   );
 }
 
-export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix }) {
+export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix, search, onSearchChange }) {
   const { albums, playlists, library, generalLibrary, coverOverrides, selectedFolderName, loadingLibrary, libraryHydrating, libraryProgress, libraryError, pendingFolderConfirm, queueToast } = usePlayerState();
-  const { pickFolder, pickNativeFolder, playRandomMixFrom, commitCleanerResult, movePlaylist } =
-    usePlayerActions();
+  const { pickFolder, pickNativeFolder, playRandomMixFrom, movePlaylist } = usePlayerActions();
   const [tab, setTab] = useState("playnow");
   // The persistent top search bar is the ONLY search input on this screen.
   // It spans the whole library (Artists/Albums/Playlists/Tracks) regardless
@@ -52,16 +48,13 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
   // value its results replace whatever the current tab would render. There
   // is deliberately no per-tab filter input — the tab lists always show
   // their full contents.
-  const [searchQuery, setSearchQuery] = useState("");
+  const searchQuery = search;
+  const setSearchQuery = onSearchChange;
   // Tracks-tab ordering only. Albums/Playlists/Play Now keep whatever
   // order the store hands them — this toggle is deliberately rendered
   // inside the Tracks tab rather than beside the shared search bar, so
   // it can't read as a control over the whole library.
   const [trackSortDesc, setTrackSortDesc] = useState(false);
-  const [menuTrack, setMenuTrack] = useState(null);
-  const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
-  const [cleanTrack, setCleanTrack] = useState(null);
-  const [editTrack, setEditTrack] = useState(null);
   const [menuPlaylist, setMenuPlaylist] = useState(null);
   // Tracks tab only — Albums/Playlists/Play Now are lists of albums and
   // playlists, not of tracks, so there is nothing there to select.
@@ -119,6 +112,13 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
     const visiblePool = searching ? searchResults.tracks : generalLibrary;
     playRandomMixFrom(visiblePool, track);
   }
+
+  // The one track-actions menu, shared with Album detail, Playlist detail
+  // and the search results below (see components/useTrackActions.jsx).
+  // Tracks-tab rows reach it by tapping ⋯ because their hold is taken by
+  // bulk-select; search-result rows, which have no competing hold, also
+  // accept a long-press via menuRowProps.
+  const { openMenu, menuRowProps, overlays } = useTrackActions({ onPlay: playSong });
 
   function filterByArtist(artist) {
     // "Artist" (from a track's action menu or a search result) narrows via
@@ -311,7 +311,13 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                   const isFavorite = favPlaylist?.trackIds.includes(t.id);
                   return (
                     <div key={t.id} className="track-row-wrap track-row-thumb-wrap">
-                      <button className="track-row-play track-row-with-thumb" onClick={() => playSong(t)}>
+                      <button
+                        className="track-row-play track-row-with-thumb"
+                        // Nothing else claims a hold on a search result, so
+                        // holding one opens its actions menu. A tap still
+                        // plays it.
+                        {...menuRowProps(t, () => playSong(t))}
+                      >
                         <div className={`track-row-thumb ${t.cover ? "" : "cover-glass"}`} style={t.cover ? { background: `url(${t.cover}) center/cover` } : undefined}>
                           {!t.cover && <NoteMark size={18} style={{ color: "var(--accent-text)" }} />}
                         </div>
@@ -320,20 +326,15 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                           <span className="track-row-text-artist">{t.artist} · {t.album}</span>
                         </span>
                       </button>
+                      {/* The bookmark that used to sit here is "Add to
+                          Favourites" in the menu now — one affordance per
+                          row, same as every other track list. */}
                       <button
                         className="icon-btn small track-edit-btn"
-                        onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
-                        aria-label="Add to playlist"
-                        title="Add to playlist"
-                        style={isFavorite ? { color: "var(--accent-text)" } : undefined}
-                      >
-                        <Bookmark size={15} fill={isFavorite ? "currentColor" : "none"} />
-                      </button>
-                      <button
-                        className="icon-btn small track-edit-btn"
-                        onClick={(e) => { e.stopPropagation(); setMenuTrack(t); }}
+                        onClick={(e) => { e.stopPropagation(); openMenu(t); }}
                         aria-label="Track actions"
-                        title="Track actions"
+                        title="Track actions — or hold the row"
+                        style={isFavorite ? { color: "var(--accent-text)" } : undefined}
                       >
                         <MoreVertical size={15} />
                       </button>
@@ -454,7 +455,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
                 {!selecting && (
                   <button
                     className="icon-btn small track-edit-btn"
-                    onClick={(e) => { e.stopPropagation(); setMenuTrack(t); }}
+                    onClick={(e) => { e.stopPropagation(); openMenu(t); }}
                     aria-label="Track actions"
                     title="Track actions"
                   >
@@ -474,31 +475,7 @@ export default function Library({ onOpenAlbum, onOpenPlaylist, onOpenInstantMix 
         </div>
       )}
 
-      {menuTrack && (
-        <TrackActionsMenu
-          track={menuTrack}
-          onClose={() => setMenuTrack(null)}
-          onPlay={playSong}
-          onOpenAlbum={onOpenAlbum}
-          onFilterArtist={filterByArtist}
-          onAddToPlaylist={setAddToPlaylistTrack}
-          onEdit={setEditTrack}
-          onClean={setCleanTrack}
-        />
-      )}
-      {addToPlaylistTrack && (
-        <AddToPlaylistModal track={addToPlaylistTrack} onClose={() => setAddToPlaylistTrack(null)} />
-      )}
-      {editTrack && (
-        <MetadataEditModal track={editTrack} onClose={() => setEditTrack(null)} />
-      )}
-      {cleanTrack && (
-        <MetadataCleaner
-          track={cleanTrack}
-          onClose={() => setCleanTrack(null)}
-          onCommit={(record) => commitCleanerResult(cleanTrack.id, record)}
-        />
-      )}
+      {overlays}
 
       {/* The whole selection goes through the existing Select Playlist
           popup in one action — same sheet, same "New playlist…" row, just

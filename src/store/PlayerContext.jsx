@@ -2531,6 +2531,11 @@ export function PlayerProvider({ children }) {
     createPlaylistWithTrack: (name, tracks) =>
       dispatch({ type: "CREATE_PLAYLIST_WITH_TRACK", name, tracks: Array.isArray(tracks) ? tracks : tracks ? [tracks] : [] }),
     saveQueueAsPlaylist: (name) => dispatch({ type: "SAVE_QUEUE_AS_PLAYLIST", name }),
+    // The same transient line the queue and playlist actions already
+    // raise (auto-cleared after 2.2s — see the SET_QUEUE_TOAST timer), now
+    // reachable by anything that needs to say one thing and stop. Share
+    // uses it to report a clipboard fallback.
+    showToast: (message) => dispatch({ type: "SET_QUEUE_TOAST", message }),
     setTheme: (theme) => dispatch({ type: "SET_THEME", theme }),
     setClassicMode: (on) => dispatch({ type: "SET_CLASSIC_MODE", on }),
     setClassicColorway: (colorway) => dispatch({ type: "SET_CLASSIC_COLORWAY", colorway }),

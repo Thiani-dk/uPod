@@ -1,10 +1,9 @@
 // src/screens/AlbumDetail.jsx
 import React, { useRef, useState } from "react";
-import { ChevronLeft, Play, Shuffle, Heart, Wand2, Pencil, Plus, ImagePlus, RotateCcw, Bookmark } from "lucide-react";
+import { ChevronLeft, Play, Shuffle, Heart, Wand2, ImagePlus, RotateCcw, MoreVertical } from "lucide-react";
 import { usePlayerActions, usePlayerState, FAVORITES_PLAYLIST_ID } from "../store/PlayerContext";
 import NoteMark from "../components/NoteMark";
-import MetadataEditModal from "../components/MetadataEditModal";
-import AddToPlaylistModal from "../components/AddToPlaylistModal";
+import useTrackActions from "../components/useTrackActions";
 import BulkActionBar from "../components/BulkActionBar";
 import BulkSelectBox from "../components/BulkSelectBox";
 import useBulkSelect from "../utils/useBulkSelect";
@@ -17,16 +16,25 @@ function formatDur(seconds) {
 }
 
 export default function AlbumDetail({ album: albumProp, onBack }) {
-  const { playAlbumFromTrack, fixAlbumTrackOrder, addToQueue, playTrackList, addTracksToPlaylist, removeTracksFromPlaylist, setAlbumCoverOverride, clearAlbumCoverOverride } = usePlayerActions();
+  const { playAlbumFromTrack, fixAlbumTrackOrder, playTrackList, addTracksToPlaylist, removeTracksFromPlaylist, setAlbumCoverOverride, clearAlbumCoverOverride } = usePlayerActions();
   const { queue, queueIndex, albums, trackOrderStatus, playlists, coverOverrides } = usePlayerState();
   const [lastFixResult, setLastFixResult] = useState(null);
-  const [editingTrack, setEditingTrack] = useState(null);
-  const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
   // The same long-press selection the Tracks tab has (see useBulkSelect).
   // It's safe on these rows specifically because nothing else here claims
   // a hold on them — unlike PlaylistDetail, whose rows carry a drag
   // handle for reordering.
   const { selectedIds, selecting, clearSelection, rowProps } = useBulkSelect();
+  // The same menu the Tracks tab opens — these rows used to expose three
+  // hand-picked actions (favourite / queue / edit) and nothing else, so
+  // Play Next, Artist, Clean up, Share and Delete were unreachable from
+  // the album you were looking at. One ⋯ now opens the lot.
+  //
+  // Reached by TAP, not by hold: the hold on these rows is bulk-select
+  // (just above), and giving it a second meaning would break both.
+  // `menuRowProps` is deliberately unused here for that reason.
+  const { openMenu, overlays } = useTrackActions({
+    onPlay: (t) => playAlbumFromTrack(album, t),
+  });
   const coverInputRef = useRef(null);
 
   const album = albums.find((a) => a.id === albumProp.id) || albumProp;
@@ -190,45 +198,25 @@ export default function AlbumDetail({ album: albumProp, onBack }) {
                   progress, same as the Tracks tab's overflow button —
                   they act on one track, and the screen is about several. */}
               {!selecting && (
-                <>
-                  <button
-                    className="icon-btn small track-edit-btn"
-                    onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
-                    aria-label="Add to playlist"
-                    title="Add to playlist"
-                    style={trackIsFavorited ? { color: "var(--accent-text)" } : undefined}
-                  >
-                    <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
-                  </button>
-                  <button
-                    className="icon-btn small track-edit-btn"
-                    onClick={(e) => { e.stopPropagation(); addToQueue(t); }}
-                    aria-label="Add to queue"
-                    title="Add to queue"
-                  >
-                    <Plus size={13} />
-                  </button>
-                  <button
-                    className="icon-btn small track-edit-btn"
-                    onClick={() => setEditingTrack(t)}
-                    aria-label="Edit track info"
-                    title="Edit track info"
-                  >
-                    <Pencil size={13} />
-                  </button>
-                </>
+                <button
+                  className="icon-btn small track-edit-btn"
+                  onClick={(e) => { e.stopPropagation(); openMenu(t); }}
+                  aria-label={`Actions for ${t.title || "track"}`}
+                  title="Track actions"
+                  // Kept the favourite tint the bookmark icon used to
+                  // carry: the row still says at a glance whether this
+                  // track is a favourite, without spending a button on it.
+                  style={trackIsFavorited ? { color: "var(--accent-text)" } : undefined}
+                >
+                  <MoreVertical size={13} />
+                </button>
               )}
             </div>
           );
         })}
       </div>
 
-      {editingTrack && (
-        <MetadataEditModal track={editingTrack} onClose={() => setEditingTrack(null)} />
-      )}
-      {addToPlaylistTrack && (
-        <AddToPlaylistModal track={addToPlaylistTrack} onClose={() => setAddToPlaylistTrack(null)} />
-      )}
+      {overlays}
       <BulkActionBar selectedIds={selectedIds} pool={album.tracks} onClear={clearSelection} />
     </div>
   );
