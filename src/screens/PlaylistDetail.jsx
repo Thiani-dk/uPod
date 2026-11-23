@@ -1,23 +1,21 @@
 // src/screens/PlaylistDetail.jsx
 import React, { useRef, useState } from "react";
-import { ChevronLeft, Play, Plus, Bookmark, ImagePlus, Trash2, Wand2, MoreVertical, GripVertical, ListMinus } from "lucide-react";
+import { ChevronLeft, Play, ImagePlus, Trash2, Wand2, MoreVertical, GripVertical, ListMinus } from "lucide-react";
 import { usePlayerState, usePlayerActions, FAVORITES_PLAYLIST_ID, playlistCoverKey } from "../store/PlayerContext";
-import AddToPlaylistModal from "../components/AddToPlaylistModal";
 import PlaylistActionsMenu from "../components/PlaylistActionsMenu";
+import useTrackActions from "../components/useTrackActions";
 import useDragReorder from "../utils/useDragReorder";
 
 export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
   const { library, queue, queueIndex, playlists, coverOverrides, queueToast } = usePlayerState();
   const {
     playPlaylist,
-    addToQueue,
     movePlaylistTrack,
     removeTrackFromPlaylist,
     setPlaylistCoverOverride,
     clearPlaylistCoverOverride,
   } = usePlayerActions();
   const playlist = playlists.find((p) => p.id === playlistProp.id) || playlistProp;
-  const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const coverInputRef = useRef(null);
   const cover = coverOverrides[playlistCoverKey(playlist.id)];
@@ -33,6 +31,15 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
   }
 
   const favPlaylist = playlists.find((p) => p.id === FAVORITES_PLAYLIST_ID);
+
+  // Same menu as the Tracks tab and Album detail. These rows can afford
+  // the long-press that those two can't: the hold that matters here
+  // belongs to the grip handle, which is its own small button, so the row
+  // body is free. The ⋯ button is kept alongside it as the discoverable
+  // way in — a hold nobody knows about is not an affordance.
+  const { openMenu, menuRowProps, overlays } = useTrackActions({
+    onPlay: (t) => playPlaylist(playlist, t),
+  });
 
   const tracks = playlist.trackIds.map((id) => library.find((t) => t.id === id)).filter(Boolean);
   const currentTrackId = queue[queueIndex]?.id;
@@ -142,26 +149,24 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
               >
                 <GripVertical size={14} />
               </button>
-              <button className="track-row-play" onClick={() => playPlaylist(playlist, t)}>
+              <button
+                className="track-row-play"
+                // Hold to open the actions menu, tap to play from here.
+                {...menuRowProps(t, () => playPlaylist(playlist, t))}
+              >
                 <span className="track-n">{i + 1}</span>
                 <span className="track-title"><span className="track-title-text">{t.title}</span></span>
               </button>
+              {/* The bookmark and + that used to sit here are "Add to
+                  Favourites" and "Queue" inside the menu now. */}
               <button
                 className="icon-btn small track-edit-btn"
-                onClick={(e) => { e.stopPropagation(); setAddToPlaylistTrack(t); }}
-                aria-label="Add to playlist"
-                title="Add to playlist"
+                onClick={(e) => { e.stopPropagation(); openMenu(t); }}
+                aria-label={`Actions for ${t.title || "track"}`}
+                title="Track actions — or hold the row"
                 style={trackIsFavorited ? { color: "var(--accent-text)" } : undefined}
               >
-                <Bookmark size={13} fill={trackIsFavorited ? "currentColor" : "none"} />
-              </button>
-              <button
-                className="icon-btn small track-edit-btn"
-                onClick={(e) => { e.stopPropagation(); addToQueue(t); }}
-                aria-label="Add to queue"
-                title="Add to queue"
-              >
-                <Plus size={13} />
+                <MoreVertical size={13} />
               </button>
               {/* Deliberately not a bin: this takes the track out of this
                   one playlist and nothing else. The file on disk and the
@@ -181,9 +186,7 @@ export default function PlaylistDetail({ playlist: playlistProp, onBack }) {
         })}
         {tracks.length === 0 && <div className="empty-state">No tracks in this playlist yet.</div>}
       </div>
-      {addToPlaylistTrack && (
-        <AddToPlaylistModal track={addToPlaylistTrack} onClose={() => setAddToPlaylistTrack(null)} />
-      )}
+      {overlays}
       {actionsOpen && (
         <PlaylistActionsMenu
           playlist={playlist}
