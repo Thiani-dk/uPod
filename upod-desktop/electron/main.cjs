@@ -780,6 +780,18 @@ ipcMain.handle("share:setClipboardWatch", async () => ({}));
 
 ipcMain.handle("share:getClipboardWatch", async () => ({ enabled: false }));
 
+// The outbound half of sharing. The app's track-actions menu has a Share
+// row; there's no system share sheet on the desktop, so "share" there
+// means "put the track's details on the clipboard to paste". The renderer
+// can't do that itself reliably — navigator.clipboard.writeText and
+// execCommand("copy") both need the document focused and throw
+// NotAllowedError when the window is in the background, which is exactly
+// when a user might reach for it. The main process has no such limit.
+ipcMain.handle("share:copyText", async (_e, { text }) => {
+  clipboard.writeText(String(text ?? ""));
+  return { ok: true };
+});
+
 // ---------------------------------------------------------------------------
 // Small native odds and ends
 // ---------------------------------------------------------------------------

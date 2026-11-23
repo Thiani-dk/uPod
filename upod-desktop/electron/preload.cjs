@@ -53,6 +53,11 @@ contextBridge.exposeInMainWorld("upodNative", {
     onShared: (h) => on("share:url", h),
     setClipboardWatch: (opts) => ipcRenderer.invoke("share:setClipboardWatch", opts),
     getClipboardWatch: () => ipcRenderer.invoke("share:getClipboardWatch"),
+    // The outbound direction: what a track's Share row uses on the
+    // desktop, where there is no system share sheet. Feature-detected by
+    // src/utils/shareTrack.js in the shared app code, so Android (which
+    // has a real sheet) never looks for it.
+    copyText: (opts) => ipcRenderer.invoke("share:copyText", opts),
   },
   http: {
     request: (opts) => ipcRenderer.invoke("http:request", opts),
